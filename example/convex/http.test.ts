@@ -171,3 +171,112 @@ describe('HTTP seam — POST /tools/check (app-mounted, verifyCaller-gated)', ()
     expect(decision.decision).toBe('allow');
   });
 });
+
+function postTo(
+  t: ConvexTest,
+  path: string,
+  body: string,
+  headers: Record<string, string> = {}
+) {
+  return t.fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', ...headers},
+    body
+  });
+}
+
+async function billingCallIds(t: ConvexTest): Promise<string[]> {
+  const rows = await t.run(async (ctx) =>
+    ctx.db.query('billingCalls').collect()
+  );
+  return rows.map((r) => r.correlationId);
+}
+
+describe('HTTP seam — uniform budget enforcement across entry points', () => {
+  beforeEach(() => {
+    vi.stubEnv('TOOLS_SIGNING_SECRET', 'test-signing-secret');
+    vi.stubEnv('MODE', 'test');
+    vi.stubEnv('EXAMPLE_CALLER_TOKEN', TOKEN);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test('billingCheck configured: an HTTP allow records a billingCalls row (budget ran)', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'search'
+    });
+    const res = await postTo(
+      t,
+      '/tools/check',
+      JSON.stringify({tool: 'search', correlationId: 'http-allow'}),
+      authed
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as DecisionBody).decision).toBe('allow');
+    // The HTTP allow appears in billingCalls, exactly like an in-Convex allow —
+    // the budget step ran identically over HTTP.
+    expect(await billingCallIds(t)).toEqual(['http-allow']);
+  });
+
+  test('billingCheck denies over HTTP → 403 deny budget_exceeded, one audit row', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'search'
+    });
+    const res = await postTo(
+      t,
+      '/tools-budget-deny/check',
+      JSON.stringify({tool: 'search', correlationId: 'http-deny'}),
+      authed
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as DecisionBody;
+    expect(body.decision).toBe('deny');
+    expect(body.reason).toBe('budget_exceeded');
+
+    const rows = await auditRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].decision).toBe('deny');
+    expect(rows[0].reason).toBe('budget_exceeded');
+  });
+
+  test('auth before billing: a bad token → 401, NO billing call, NO audit row', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'search'
+    });
+    const res = await postTo(
+      t,
+      '/tools/check',
+      JSON.stringify({tool: 'search'}),
+      {'X-Caller-Token': 'WRONG', 'X-Subject': 'user_alice'}
+    );
+    expect(res.status).toBe(401);
+    // Billing must not run before verifyCaller.
+    expect(await billingCallIds(t)).toHaveLength(0);
+    expect(await auditRows(t)).toHaveLength(0);
+  });
+
+  test('regression: a route with NO billingCheck skips the budget step', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'search'
+    });
+    const res = await postTo(
+      t,
+      '/tools-no-billing/check',
+      JSON.stringify({tool: 'search', correlationId: 'http-nobilling'}),
+      authed
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as DecisionBody).decision).toBe('allow');
+    // No billingCheck on this route → the budget step is skipped.
+    expect(await billingCallIds(t)).toHaveLength(0);
+  });
+});

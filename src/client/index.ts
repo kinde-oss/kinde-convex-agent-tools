@@ -1,19 +1,16 @@
 import type {
   FunctionArgs,
-  FunctionReference,
   FunctionReturnType,
   GenericActionCtx,
   GenericDataModel
 } from 'convex/server';
-import {createFunctionHandle} from 'convex/server';
 import {ConvexError} from 'convex/values';
 import type {ComponentApi} from '../component/_generated/component.js';
-import type {
-  BillingCheckPayload,
-  BillingCheckResult
-} from '../component/validators.js';
+import {billingCheckHandle} from './billing.js';
+import type {BillingCheck} from './billing.js';
 
 export type {ComponentApi} from '../component/_generated/component.js';
+export type {BillingCheck} from './billing.js';
 export type {
   BillingCheckPayload,
   BillingCheckResult,
@@ -247,23 +244,6 @@ export interface ToolCall {
 }
 
 /**
- * Billing seam (P5). App-supplied: a FunctionReference to a MUTATION that
- * decides whether billing permits a tool call. It receives a
- * {@link BillingCheckPayload} (only the REDACTED digest — never raw args) and
- * returns a {@link BillingCheckResult}. The component INVOKES it IN THE SAME
- * TRANSACTION via a FunctionHandle (the client serializes this reference with
- * `createFunctionHandle` and threads it into `checkTool`) — the core imports NO
- * billing package. A mutation reference (not a query) mirrors billing's own
- * spend-authority check, so composing across the suite is uniform.
- */
-export type BillingCheck = FunctionReference<
-  'mutation',
-  'public' | 'internal',
-  BillingCheckPayload,
-  BillingCheckResult
->;
-
-/**
  * Options for the {@link AgentTools} client. `billingCheck` is the billing
  * composition seam (P5). The AUTH seam (`verifyCaller`) is NOT here — it belongs
  * to the HTTP path only, so it lives on the app-mounted route's
@@ -324,19 +304,16 @@ export class AgentTools {
     public readonly options: AgentToolsOptions = {}
   ) {
     // Shared by checkTool and runTool so the pipeline runs through ONE code
-    // path. Serializes the app's billingCheck reference to a FunctionHandle so
-    // it can cross the mutation boundary and be invoked inside the spine; runs
-    // in the caller's Convex function context, where createFunctionHandle is
-    // available.
+    // path. `billingCheckHandle` serializes the app's billingCheck reference to
+    // a FunctionHandle (the SAME helper the HTTP route uses, so the two entry
+    // points can never diverge on budget enforcement); it runs in the caller's
+    // Convex function context, where createFunctionHandle is available.
     const runCheckTool = async (
       ctx: RunMutationCtx,
       subject: string,
       opts: CheckToolOptions
     ): Promise<GateResult> => {
-      const billingCheck =
-        options.billingCheck === undefined
-          ? undefined
-          : await createFunctionHandle(options.billingCheck);
+      const billingCheck = await billingCheckHandle(options.billingCheck);
       return ctx.runMutation(component.enforce.checkTool, {
         subject,
         ...opts,

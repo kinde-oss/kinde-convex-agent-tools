@@ -4,6 +4,8 @@ import {ConvexError} from 'convex/values';
 import type {ComponentApi} from '../component/_generated/component.js';
 import {fail, parseJson} from '../component/errors.js';
 import type {ToolArgs} from '../component/validators.js';
+import {billingCheckHandle} from './billing.js';
+import type {BillingCheck} from './billing.js';
 
 /**
  * What an app's {@link VerifyCaller} returns on success: at least the
@@ -40,6 +42,14 @@ export interface RegisterRoutesOptions {
   verifyCaller: VerifyCaller;
   /** Mount the route under this prefix. Default `/tools`. */
   pathPrefix?: string;
+  /**
+   * Optional billing seam, IDENTICAL to the client's `billingCheck`. When set,
+   * an HTTP-originated call runs the SAME budget step as an in-Convex
+   * `gate.checkTool` — so budget enforcement is uniform across entry points.
+   * Absent → the budget step is skipped. It is only consulted AFTER
+   * `verifyCaller` succeeds, so an unauthenticated request never reaches it.
+   */
+  billingCheck?: BillingCheck;
 }
 
 interface ToolRequest {
@@ -164,10 +174,12 @@ function statusForDecision(decision: 'allow' | 'deny' | 'approve'): number {
  *   2. Authenticate via `verifyCaller` BEFORE the pipeline (throws/!subject →
  *      401 `caller_unauthenticated`; the decision pipeline never runs, so no
  *      grant lookup and no audit row for an unauthenticated request).
- *   3. Run `enforce.checkTool` with the verified subject and parsed tool/args;
- *      return the decision as JSON with a mapped status (see
- *      {@link statusForDecision}). The subject is trusted only AFTER verifyCaller
- *      proves it — the in-Convex trust model is unchanged.
+ *   3. Run `enforce.checkTool` with the verified subject and parsed tool/args —
+ *      the SAME pipeline as an in-Convex `gate.checkTool`, INCLUDING the budget
+ *      step when `billingCheck` is configured (so an HTTP-originated call is
+ *      budget-gated identically). Return the decision as JSON with a mapped
+ *      status (see {@link statusForDecision}). The subject is trusted only AFTER
+ *      verifyCaller proves it — the in-Convex trust model is unchanged.
  */
 export function registerRoutes(
   http: HttpRouter,
@@ -212,15 +224,21 @@ export function registerRoutes(
         });
       }
 
-      // 3. Run the decision pipeline with the VERIFIED subject.
+      // 3. Run the decision pipeline with the VERIFIED subject — the SAME
+      // pipeline (including the budget step) as an in-Convex gate.checkTool.
+      // The billing handle is serialized only AFTER auth, and the billing
+      // mutation itself runs inside checkTool, so no billing call precedes
+      // authentication. Absent billingCheck → budget skipped, exactly as before.
       try {
+        const billingCheck = await billingCheckHandle(options.billingCheck);
         const decision = await ctx.runMutation(component.enforce.checkTool, {
           subject: verified.subject,
           tool: toolRequest.tool,
           ...(toolRequest.args === undefined ? {} : {args: toolRequest.args}),
           ...(toolRequest.correlationId === undefined
             ? {}
-            : {correlationId: toolRequest.correlationId})
+            : {correlationId: toolRequest.correlationId}),
+          ...(billingCheck === undefined ? {} : {billingCheck})
         });
         return json(statusForDecision(decision.decision), decision);
       } catch (error) {

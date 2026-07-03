@@ -222,8 +222,11 @@ describe('end-to-end agent governance narrative', () => {
 
     // The budget step was REAL: it ran on exactly the paths that reached it
     // (after allowlist + argument policy, before/at risk), and NOT on the ones
-    // short-circuited earlier (no_grant, argument_denied, revoked).
+    // short-circuited earlier (no_grant, argument_denied, revoked). The HTTP
+    // route is now budget-gated too, so the HTTP allow (`c-a-http`) is present
+    // alongside the in-Convex allows — enforcement is uniform across entry points.
     expect(await billingCorrelationIds(t)).toEqual([
+      'c-a-http',
       'c-a-run',
       'c-c-ok',
       'c-d',
