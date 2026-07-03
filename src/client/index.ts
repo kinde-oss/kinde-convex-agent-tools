@@ -16,7 +16,11 @@ import type {
 export type {ComponentApi} from '../component/_generated/component.js';
 export type {
   BillingCheckPayload,
-  BillingCheckResult
+  BillingCheckResult,
+  // The plain, flat tool-argument shape the gate accepts — useful for apps and
+  // adapters typing a tool's args. (Still framework-free: it is just a record of
+  // JSON primitives / string arrays.)
+  ToolArgs
 } from '../component/validators.js';
 // The app-mountable HTTP seam (client-side; see ./http.ts — the Twilio pattern).
 export {registerRoutes} from './http.js';
