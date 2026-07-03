@@ -10,5 +10,15 @@ export default defineSchema({
     tool: v.string(),
     argDigest: v.string(),
     correlationId: v.string()
+  }),
+
+  // Records each time a governed tool's real implementation actually EXECUTED
+  // (the `fn` inside gate.runTool, or a post-approval execution). Lets the e2e
+  // narrative prove a denied/approval-pending tool never ran, and an allowed one
+  // did — an app-side side effect, distinct from the component's audit trail.
+  toolRuns: defineTable({
+    subject: v.string(),
+    tool: v.string(),
+    at: v.number()
   })
 });
