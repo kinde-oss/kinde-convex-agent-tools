@@ -9,6 +9,7 @@
  */
 
 import type * as approvals from '../approvals.js';
+import type * as audit from '../audit.js';
 import type * as enforce from '../enforce.js';
 import type * as env from '../env.js';
 import type * as errors from '../errors.js';
@@ -23,6 +24,7 @@ import {anyApi, componentsGeneric} from 'convex/server';
 
 const fullApi: ApiFromModules<{
   approvals: typeof approvals;
+  audit: typeof audit;
   enforce: typeof enforce;
   env: typeof env;
   errors: typeof errors;

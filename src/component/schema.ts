@@ -119,8 +119,20 @@ export default defineSchema({
     correlationId: v.string(),
     ts: v.number()
   })
+    // Indexes back the read-only `audit.query`, each ordered newest-first via
+    // `.order('desc')`. Every supported filter (and the one supported
+    // combination) maps to an EXACT index so paginator returns full pages and
+    // the cursor is honored without dropping matches:
+    //   by_subject_ts          → subject only
+    //   by_decision_ts         → decision only
+    //   by_subject_decision_ts → subject AND decision (compound, exact)
+    //   by_correlation         → correlationId (bounded per call)
+    //   by_ts                  → unfiltered newest-first scan
     .index('by_subject_ts', ['subject', 'ts'])
-    .index('by_correlation', ['correlationId']),
+    .index('by_correlation', ['correlationId'])
+    .index('by_decision_ts', ['decision', 'ts'])
+    .index('by_subject_decision_ts', ['subject', 'decision', 'ts'])
+    .index('by_ts', ['ts']),
 
   /**
    * The revocation overlay: a reactive kill switch checked by the spine BEFORE

@@ -73,7 +73,10 @@ export const reasonCodeValidator = v.union(
   v.literal('budget_exceeded'),
   v.literal('approval_required'),
   v.literal('approval_approved'),
-  v.literal('approval_denied')
+  v.literal('approval_denied'),
+  // The COMPLETION event appended by runTool after an allowed tool actually
+  // executes (audit-only; NOT a DenyCode and NOT a fresh decision).
+  v.literal('executed')
 );
 
 /**

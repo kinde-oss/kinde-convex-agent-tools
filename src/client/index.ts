@@ -6,6 +6,7 @@ import type {
   GenericDataModel
 } from 'convex/server';
 import {createFunctionHandle} from 'convex/server';
+import {ConvexError} from 'convex/values';
 import type {ComponentApi} from '../component/_generated/component.js';
 import type {
   BillingCheckPayload,
@@ -43,6 +44,8 @@ type SetToolRiskArgs = FunctionArgs<ComponentApi['policy']['setToolRisk']>;
 type ApproveArgs = FunctionArgs<ComponentApi['approvals']['approve']>;
 type DenyApprovalArgs = FunctionArgs<ComponentApi['approvals']['deny']>;
 type GetStatusArgs = FunctionArgs<ComponentApi['approvals']['getStatus']>;
+/** The opaque approvals id type, as accepted by the approvals methods. */
+export type ApprovalId = GetStatusArgs['approvalId'];
 type RevokeArgs = FunctionArgs<ComponentApi['revocations']['revoke']>;
 type LiftRevocationArgs = FunctionArgs<
   ComponentApi['revocations']['liftRevocation']
@@ -50,6 +53,7 @@ type LiftRevocationArgs = FunctionArgs<
 type RevocationStatusArgs = FunctionArgs<
   ComponentApi['revocations']['getStatus']
 >;
+type AuditQueryArgs = FunctionArgs<ComponentApi['audit']['query']>;
 
 /** The machine-readable decision returned by {@link GateApi.checkTool}. */
 export type GateResult = FunctionReturnType<
@@ -76,6 +80,20 @@ type LiftRevocationResult = FunctionReturnType<
 export type RevocationStatusResult = FunctionReturnType<
   ComponentApi['revocations']['getStatus']
 >;
+/** A page of audit rows, as returned by {@link AuditApi.query}. */
+export type AuditQueryResult = FunctionReturnType<
+  ComponentApi['audit']['query']
+>;
+
+/**
+ * The result of a successful {@link GateApi.runTool}: the app function's return
+ * value plus the decision's `correlationId` (so the caller can tie it to the
+ * audit trail: the decision row and the `executed` completion row share it).
+ */
+export interface RunToolResult<TResult> {
+  result: TResult;
+  correlationId: string;
+}
 
 /**
  * The stable `targetId` for a `grant`-level revocation: the (subject, tool)
@@ -104,6 +122,36 @@ export interface GateApi {
     subject: string,
     opts: CheckToolOptions
   ): Promise<GateResult>;
+
+  /**
+   * Decision + execution in one call: run `checkTool` ONCE, then act on the
+   * outcome.
+   * - allow → run `fn()` app-side, append the `executed` completion audit row,
+   *   and return `{result, correlationId}`.
+   * - deny → throw a ConvexError `{code:'tool_denied', reason, correlationId}`;
+   *   `fn` never runs.
+   * - approve → throw a ConvexError `{code:'approval_pending', approvalId,
+   *   correlationId}`; `fn` never runs.
+   *
+   * `fn` is the APP's tool implementation and executes in the APP's context
+   * (this is client-side orchestration) — it is never passed into a component
+   * mutation. The pipeline is evaluated exactly once (a single `checkTool`).
+   */
+  runTool<TResult>(
+    ctx: RunMutationCtx,
+    subject: string,
+    opts: CheckToolOptions,
+    fn: () => Promise<TResult>
+  ): Promise<RunToolResult<TResult>>;
+}
+
+/** The read-only audit surface of the client. */
+export interface AuditApi {
+  /**
+   * Paginated, newest-first, filterable read of the audit trail (by subject,
+   * correlationId, and/or decision). Rows carry only the redacted digest.
+   */
+  query(ctx: RunQueryCtx, opts: AuditQueryArgs): Promise<AuditQueryResult>;
 }
 
 /** The policy-administration surface of the client. */
@@ -269,26 +317,64 @@ export class AgentTools {
   readonly approvals: ApprovalsApi;
   /** Revocation kill switch: reactively deny a target without deleting grants. */
   readonly revocations: RevocationsApi;
+  /** Read-only, paginated audit trail. */
+  readonly audit: AuditApi;
 
   constructor(
     public readonly component: ComponentApi,
     public readonly options: AgentToolsOptions = {}
   ) {
+    // Shared by checkTool and runTool so the pipeline runs through ONE code
+    // path. Serializes the app's billingCheck reference to a FunctionHandle so
+    // it can cross the mutation boundary and be invoked inside the spine; runs
+    // in the caller's Convex function context, where createFunctionHandle is
+    // available.
+    const runCheckTool = async (
+      ctx: RunMutationCtx,
+      subject: string,
+      opts: CheckToolOptions
+    ): Promise<GateResult> => {
+      const billingCheck =
+        options.billingCheck === undefined
+          ? undefined
+          : await createFunctionHandle(options.billingCheck);
+      return ctx.runMutation(component.enforce.checkTool, {
+        subject,
+        ...opts,
+        ...(billingCheck === undefined ? {} : {billingCheck})
+      });
+    };
+
     this.gate = {
-      checkTool: async (ctx, subject, opts) => {
-        // Serialize the app's billingCheck reference to a FunctionHandle so it
-        // can cross the mutation boundary and be invoked inside the spine. This
-        // runs in the caller's Convex function context (where the app calls
-        // gate.checkTool), which is where createFunctionHandle is available.
-        const billingCheck =
-          options.billingCheck === undefined
-            ? undefined
-            : await createFunctionHandle(options.billingCheck);
-        return ctx.runMutation(component.enforce.checkTool, {
+      checkTool: runCheckTool,
+      runTool: async (ctx, subject, opts, fn) => {
+        // ONE decision, then act. fn NEVER runs on deny/approve.
+        const decision = await runCheckTool(ctx, subject, opts);
+        if (decision.decision === 'deny') {
+          throw new ConvexError({
+            code: 'tool_denied',
+            message: `Tool '${opts.tool}' was denied.`,
+            reason: decision.reason ?? null,
+            correlationId: decision.correlationId
+          });
+        }
+        if (decision.decision === 'approve') {
+          throw new ConvexError({
+            code: 'approval_pending',
+            message: `Tool '${opts.tool}' requires human approval before it can run.`,
+            approvalId: decision.approvalId ?? null,
+            correlationId: decision.correlationId
+          });
+        }
+        // allow → run the app's tool app-side, then append the completion row.
+        const result = await fn();
+        await ctx.runMutation(component.audit.recordCompletion, {
           subject,
-          ...opts,
-          ...(billingCheck === undefined ? {} : {billingCheck})
+          tool: opts.tool,
+          ...(opts.args === undefined ? {} : {args: opts.args}),
+          correlationId: decision.correlationId
         });
+        return {result, correlationId: decision.correlationId};
       }
     };
     this.policy = {
@@ -318,6 +404,9 @@ export class AgentTools {
         ctx.runMutation(component.revocations.liftRevocation, opts),
       getStatus: (ctx, opts) =>
         ctx.runQuery(component.revocations.getStatus, opts)
+    };
+    this.audit = {
+      query: (ctx, opts) => ctx.runQuery(component.audit.query, opts)
     };
   }
 

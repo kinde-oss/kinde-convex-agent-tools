@@ -53,6 +53,69 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    audit: {
+      query: FunctionReference<
+        'query',
+        'internal',
+        {
+          correlationId?: string;
+          decision?: 'allow' | 'deny' | 'approve';
+          paginationOpts: {
+            cursor: string | null;
+            endCursor?: string | null;
+            id?: number;
+            maximumBytesRead?: number;
+            maximumRowsRead?: number;
+            numItems: number;
+          };
+          subject?: string;
+        },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            agent: string | null;
+            argDigest: string;
+            correlationId: string;
+            decision: 'allow' | 'deny' | 'approve';
+            reason:
+              | 'granted'
+              | 'no_grant'
+              | 'argument_denied'
+              | 'revoked'
+              | 'budget_exceeded'
+              | 'approval_required'
+              | 'approval_approved'
+              | 'approval_denied'
+              | 'executed'
+              | null;
+            subject: string;
+            tool: string;
+            ts: number;
+          }>;
+          pageStatus?: 'SplitRecommended' | 'SplitRequired' | null;
+          splitCursor?: string | null;
+        },
+        Name
+      >;
+      recordCompletion: FunctionReference<
+        'mutation',
+        'internal',
+        {
+          args?: Record<
+            string,
+            string | number | boolean | null | Array<string>
+          >;
+          correlationId: string;
+          subject: string;
+          tool: string;
+        },
+        null,
+        Name
+      >;
+    };
     enforce: {
       checkTool: FunctionReference<
         'mutation',
