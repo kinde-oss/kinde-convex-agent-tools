@@ -8,15 +8,23 @@
  * @module
  */
 
+import type * as enforce from '../enforce.js';
 import type * as env from '../env.js';
 import type * as errors from '../errors.js';
+import type * as helpers from '../helpers.js';
+import type * as redact from '../redact.js';
+import type * as validators from '../validators.js';
 
 import type {ApiFromModules, FilterApi, FunctionReference} from 'convex/server';
 import {anyApi, componentsGeneric} from 'convex/server';
 
 const fullApi: ApiFromModules<{
+  enforce: typeof enforce;
   env: typeof env;
   errors: typeof errors;
+  helpers: typeof helpers;
+  redact: typeof redact;
+  validators: typeof validators;
 }> = anyApi as any;
 
 /**

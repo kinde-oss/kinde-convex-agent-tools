@@ -22,4 +22,26 @@ import type {FunctionReference} from 'convex/server';
  * ```
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
-  {};
+  {
+    enforce: {
+      checkTool: FunctionReference<
+        'mutation',
+        'internal',
+        {
+          args?: Record<
+            string,
+            string | number | boolean | null | Array<string>
+          >;
+          correlationId?: string | null;
+          subject: string;
+          tool: string;
+        },
+        {
+          correlationId: string;
+          decision: 'allow' | 'deny';
+          reason?: 'no_grant' | 'argument_denied';
+        },
+        Name
+      >;
+    };
+  };
