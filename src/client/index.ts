@@ -24,6 +24,9 @@ type CheckToolArgs = FunctionArgs<ComponentApi['enforce']['checkTool']>;
 type GrantArgs = FunctionArgs<ComponentApi['policy']['grant']>;
 type RevokeGrantArgs = FunctionArgs<ComponentApi['policy']['revokeGrant']>;
 type SetToolRiskArgs = FunctionArgs<ComponentApi['policy']['setToolRisk']>;
+type ApproveArgs = FunctionArgs<ComponentApi['approvals']['approve']>;
+type DenyApprovalArgs = FunctionArgs<ComponentApi['approvals']['deny']>;
+type GetStatusArgs = FunctionArgs<ComponentApi['approvals']['getStatus']>;
 
 /** The machine-readable decision returned by {@link GateApi.checkTool}. */
 export type GateResult = FunctionReturnType<
@@ -35,6 +38,12 @@ type RevokeGrantResult = FunctionReturnType<
 >;
 type SetToolRiskResult = FunctionReturnType<
   ComponentApi['policy']['setToolRisk']
+>;
+type ApproveResult = FunctionReturnType<ComponentApi['approvals']['approve']>;
+type DenyApprovalResult = FunctionReturnType<ComponentApi['approvals']['deny']>;
+/** The status of an approval, as returned by {@link ApprovalsApi.getStatus}. */
+export type ApprovalStatusResult = FunctionReturnType<
+  ComponentApi['approvals']['getStatus']
 >;
 
 /** Everything about a `checkTool` call except the subject (which is positional). */
@@ -77,6 +86,28 @@ export interface PolicyApi {
     tool: string,
     level: SetToolRiskArgs['level']
   ): Promise<SetToolRiskResult>;
+}
+
+/** The human-in-the-loop approval surface of the client. */
+export interface ApprovalsApi {
+  /** Approve a pending approval (the app authenticates `approver`). */
+  approve(
+    ctx: RunMutationCtx,
+    approvalId: ApproveArgs['approvalId'],
+    approver: string
+  ): Promise<ApproveResult>;
+  /** Deny a pending approval, recording the human's reason. */
+  deny(
+    ctx: RunMutationCtx,
+    approvalId: DenyApprovalArgs['approvalId'],
+    approver: string,
+    reason: string
+  ): Promise<DenyApprovalResult>;
+  /** Read an approval's status (reports `expired` lazily). Read-only. */
+  getStatus(
+    ctx: RunQueryCtx,
+    approvalId: GetStatusArgs['approvalId']
+  ): Promise<ApprovalStatusResult>;
 }
 
 /**
@@ -166,6 +197,8 @@ export class AgentTools {
   readonly gate: GateApi;
   /** Policy administration: grant/revoke tools and set per-tool risk. */
   readonly policy: PolicyApi;
+  /** Human-in-the-loop: resolve and inspect approvals. */
+  readonly approvals: ApprovalsApi;
 
   constructor(
     public readonly component: ComponentApi,
@@ -182,6 +215,18 @@ export class AgentTools {
         ctx.runMutation(component.policy.revokeGrant, {subject, ...opts}),
       setToolRisk: (ctx, tool, level) =>
         ctx.runMutation(component.policy.setToolRisk, {tool, level})
+    };
+    this.approvals = {
+      approve: (ctx, approvalId, approver) =>
+        ctx.runMutation(component.approvals.approve, {approvalId, approver}),
+      deny: (ctx, approvalId, approver, reason) =>
+        ctx.runMutation(component.approvals.deny, {
+          approvalId,
+          approver,
+          reason
+        }),
+      getStatus: (ctx, approvalId) =>
+        ctx.runQuery(component.approvals.getStatus, {approvalId})
     };
   }
 

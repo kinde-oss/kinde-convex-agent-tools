@@ -1,5 +1,39 @@
 import {fail} from './errors.js';
-import type {ArgumentConstraint, ToolArgs} from './validators.js';
+import type {ArgumentConstraint, RiskLevel, ToolArgs} from './validators.js';
+
+// Ordering of risk levels, least → most strict. Used to pick the binding risk
+// when a grant and a tool policy both declare one.
+const RISK_ORDER: Record<RiskLevel, number> = {low: 0, medium: 1, high: 2};
+
+/**
+ * The effective risk for a call: the STRICTER (higher) of the grant's and the
+ * tool policy's risk levels. Precedence is deliberately "most strict wins" so
+ * neither source can weaken the other — a `high` policy is not softened by a
+ * `low` grant, and vice versa. `null` on both sides means no risk gate applies.
+ */
+export function effectiveRisk(
+  grantRisk: RiskLevel | null,
+  policyRisk: RiskLevel | null
+): RiskLevel | null {
+  if (grantRisk === null) {
+    return policyRisk;
+  }
+  if (policyRisk === null) {
+    return grantRisk;
+  }
+  return RISK_ORDER[grantRisk] >= RISK_ORDER[policyRisk]
+    ? grantRisk
+    : policyRisk;
+}
+
+/**
+ * Whether an effective risk requires human approval. THRESHOLD: only `high`
+ * requires approval; `low`/`medium`/none pass straight through to allow. Kept
+ * as its own predicate so the threshold is one documented, testable place.
+ */
+export function requiresApproval(risk: RiskLevel | null): boolean {
+  return risk === 'high';
+}
 
 /**
  * The outcome of evaluating a set of argument constraints. A conclusive deny

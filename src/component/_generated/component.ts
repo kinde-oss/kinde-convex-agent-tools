@@ -23,11 +23,42 @@ import type {FunctionReference} from 'convex/server';
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
+    approvals: {
+      approve: FunctionReference<
+        'mutation',
+        'internal',
+        {approvalId: string; approver: string},
+        null,
+        Name
+      >;
+      deny: FunctionReference<
+        'mutation',
+        'internal',
+        {approvalId: string; approver: string; reason: string},
+        null,
+        Name
+      >;
+      getStatus: FunctionReference<
+        'query',
+        'internal',
+        {approvalId: string},
+        {
+          createdAt: number;
+          expiresAt: number | null;
+          resolvedAt: number | null;
+          resolvedBy: string | null;
+          resolvedReason: string | null;
+          status: 'pending' | 'approved' | 'denied' | 'expired';
+        } | null,
+        Name
+      >;
+    };
     enforce: {
       checkTool: FunctionReference<
         'mutation',
         'internal',
         {
+          approvalTtlMs?: number;
           args?: Record<
             string,
             string | number | boolean | null | Array<string>
@@ -37,8 +68,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tool: string;
         },
         {
+          approvalId?: string;
           correlationId: string;
-          decision: 'allow' | 'deny';
+          decision: 'allow' | 'deny' | 'approve';
           reason?: 'no_grant' | 'argument_denied';
         },
         Name

@@ -1,6 +1,11 @@
 import {beforeEach, describe, expect, test, vi} from 'vitest';
 import {ConvexError} from 'convex/values';
-import {assertConstraintsWellFormed, evaluateConstraints} from './helpers.js';
+import {
+  assertConstraintsWellFormed,
+  effectiveRisk,
+  evaluateConstraints,
+  requiresApproval
+} from './helpers.js';
 import type {ArgumentConstraint} from './validators.js';
 
 // Hardening: stub ALL required component env vars before every test.
@@ -155,5 +160,30 @@ describe('assertConstraintsWellFormed — contradictions', () => {
         {arg: 'b', kind: 'max', value: 10}
       ])
     ).not.toThrow();
+  });
+});
+
+describe('effectiveRisk — stricter (higher) wins', () => {
+  test('null on both → null (no risk gate)', () => {
+    expect(effectiveRisk(null, null)).toBeNull();
+  });
+  test('one side null → the other', () => {
+    expect(effectiveRisk('high', null)).toBe('high');
+    expect(effectiveRisk(null, 'medium')).toBe('medium');
+  });
+  test('both set → the stricter one', () => {
+    expect(effectiveRisk('low', 'high')).toBe('high');
+    expect(effectiveRisk('high', 'low')).toBe('high');
+    expect(effectiveRisk('medium', 'low')).toBe('medium');
+    expect(effectiveRisk('medium', 'medium')).toBe('medium');
+  });
+});
+
+describe('requiresApproval — threshold is high', () => {
+  test('only high requires approval', () => {
+    expect(requiresApproval('high')).toBe(true);
+    expect(requiresApproval('medium')).toBe(false);
+    expect(requiresApproval('low')).toBe(false);
+    expect(requiresApproval(null)).toBe(false);
   });
 });

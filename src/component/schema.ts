@@ -1,8 +1,10 @@
 import {defineSchema, defineTable} from 'convex/server';
 import {v} from 'convex/values';
 import {
+  approvalStatusValidator,
   argumentConstraintValidator,
   decisionValidator,
+  nullableNumber,
   nullableString,
   reasonCodeValidator,
   riskLevelValidator
@@ -49,11 +51,14 @@ export default defineSchema({
   }).index('by_tool', ['tool']),
 
   /**
-   * Append-only record of EVERY attempted call — allowed or denied. `argDigest`
-   * is the redacted digest (never raw args); `reason` is the machine-readable
-   * code; `approvalId` is always null in P1 (approvals are P3). This is the
-   * operational call log; `audit` is the decision-of-record. Both are written in
-   * the same mutation so they never diverge.
+   * Append-only record of EVERY attempted call — allowed, denied, or sent to
+   * approval. `argDigest` is the redacted digest (never raw args); `reason` is
+   * the machine-readable code. `approvalId` is null for allow/deny; on an
+   * `approve` decision it back-references the `approvals` row created in the
+   * same mutation (the canonical link is `approvals.toolCallRef`; this is the
+   * convenience reverse pointer). This is the operational call log; `audit` is
+   * the decision-of-record. Both are written in the same mutation so they never
+   * diverge.
    */
   toolCalls: defineTable({
     subject: v.string(),
@@ -63,10 +68,39 @@ export default defineSchema({
     decision: decisionValidator,
     reason: nullableReason,
     correlationId: v.string(),
-    approvalId: v.null(),
+    approvalId: v.union(v.id('approvals'), v.null()),
     ts: v.number()
   })
     .index('by_subject_ts', ['subject', 'ts'])
+    .index('by_correlation', ['correlationId']),
+
+  /**
+   * A human-in-the-loop approval request, created when the risk gate routes a
+   * call to `approve`. Exactly one per approve decision, linked to its call via
+   * `toolCallRef` (canonical) and carrying the same redacted `argDigest`,
+   * `correlationId`, and triggering risk (`policy`) so the request is auditable
+   * without re-reading the call. `status` moves pending → approved | denied; a
+   * pending row past `expiresAt` is treated as `expired` on read (lazy, never
+   * persisted). `resolvedBy`/`resolvedAt` record the human resolver.
+   */
+  approvals: defineTable({
+    toolCallRef: v.id('toolCalls'),
+    subject: v.string(),
+    agent: nullableString,
+    tool: v.string(),
+    argDigest: v.string(),
+    correlationId: v.string(),
+    status: approvalStatusValidator,
+    requestedBy: nullableString,
+    policy: riskLevelValidator,
+    resolvedBy: nullableString,
+    resolvedAt: nullableNumber,
+    resolvedReason: nullableString,
+    expiresAt: nullableNumber,
+    createdAt: v.number()
+  })
+    .index('by_status', ['status'])
+    .index('by_call', ['toolCallRef'])
     .index('by_correlation', ['correlationId']),
 
   /**

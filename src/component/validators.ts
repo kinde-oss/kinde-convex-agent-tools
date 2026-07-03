@@ -2,17 +2,34 @@ import {v} from 'convex/values';
 import type {Infer} from 'convex/values';
 
 /**
- * A tool-call decision. Two-valued in P1: `allow` or `deny`. The
- * `require-human-approval` outcome arrives with the approval gate in P3, so it
- * is deliberately absent here rather than stubbed.
+ * A tool-call decision. Three-valued: `allow`, `deny`, or `approve`. `approve`
+ * is the require-human-approval outcome from the P3 risk gate — it is NOT a
+ * deny (the call is neither allowed nor rejected yet; a human must resolve it).
  */
-export const decisionValidator = v.union(v.literal('allow'), v.literal('deny'));
+export const decisionValidator = v.union(
+  v.literal('allow'),
+  v.literal('deny'),
+  v.literal('approve')
+);
 
-/** A tool's risk level. Carried on grants/policies; consumed by the P3 gate. */
+/** A tool's risk level. Carried on grants/policies; consumed by the risk gate. */
 export const riskLevelValidator = v.union(
   v.literal('low'),
   v.literal('medium'),
   v.literal('high')
+);
+
+/**
+ * The lifecycle status of an approval request. `pending` awaits a human;
+ * `approved`/`denied` are the resolved terminals; `expired` is a DERIVED status
+ * (a pending approval past its `expiresAt`) — it is computed on read, never
+ * persisted (see approvals.getStatus).
+ */
+export const approvalStatusValidator = v.union(
+  v.literal('pending'),
+  v.literal('approved'),
+  v.literal('denied'),
+  v.literal('expired')
 );
 
 /**
@@ -27,13 +44,18 @@ export const denyCodeValidator = v.union(
 
 /**
  * The machine-readable reason stamped on EVERY audit/toolCalls row — the deny
- * codes plus the positive `granted`. Every decision carries one (audit
- * completeness), so this is a superset of {@link denyCodeValidator}.
+ * codes plus the positive `granted`, the `approval_required` reason on an
+ * `approve` decision, and the two resolution reasons appended when a human
+ * resolves an approval. Every decision carries one (audit completeness), so
+ * this is a superset of {@link denyCodeValidator}.
  */
 export const reasonCodeValidator = v.union(
   v.literal('granted'),
   v.literal('no_grant'),
-  v.literal('argument_denied')
+  v.literal('argument_denied'),
+  v.literal('approval_required'),
+  v.literal('approval_approved'),
+  v.literal('approval_denied')
 );
 
 /** The scalar values a constraint can carry (never arrays or null). */
@@ -99,6 +121,7 @@ export const nullableNumber = v.union(v.number(), v.null());
 
 export type Decision = Infer<typeof decisionValidator>;
 export type RiskLevel = Infer<typeof riskLevelValidator>;
+export type ApprovalStatus = Infer<typeof approvalStatusValidator>;
 export type DenyCode = Infer<typeof denyCodeValidator>;
 export type ReasonCode = Infer<typeof reasonCodeValidator>;
 export type ArgumentConstraint = Infer<typeof argumentConstraintValidator>;
