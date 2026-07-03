@@ -12,6 +12,7 @@ import type * as enforce from '../enforce.js';
 import type * as env from '../env.js';
 import type * as errors from '../errors.js';
 import type * as helpers from '../helpers.js';
+import type * as policy from '../policy.js';
 import type * as redact from '../redact.js';
 import type * as validators from '../validators.js';
 
@@ -23,6 +24,7 @@ const fullApi: ApiFromModules<{
   env: typeof env;
   errors: typeof errors;
   helpers: typeof helpers;
+  policy: typeof policy;
   redact: typeof redact;
   validators: typeof validators;
 }> = anyApi as any;

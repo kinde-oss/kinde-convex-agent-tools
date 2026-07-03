@@ -36,15 +36,37 @@ export const reasonCodeValidator = v.union(
   v.literal('argument_denied')
 );
 
+/** The scalar values a constraint can carry (never arrays or null). */
+const constraintScalar = v.union(v.string(), v.number(), v.boolean());
+
 /**
- * A single argument-level constraint. MINIMAL in P1 — just enough to prove
- * argument-level denial end to end (the full constraint DSL is P2):
- * - `max`: deny when the numeric arg exceeds `value`.
- * - `denyValue`: deny when the arg exactly equals `value`.
- * The shape is a discriminated union, so an ill-typed constraint (e.g. a `max`
- * with a non-numeric `value`) cannot even be stored.
+ * A single, declarative, per-argument constraint. Each `kind` is evaluated
+ * independently against the call's args (see `evaluateConstraints`), and the
+ * set is deny-by-default: any one violation denies. The shape is a
+ * discriminated union, so an ill-typed constraint (e.g. a `max` with a
+ * non-numeric `value`) cannot even be stored.
+ *
+ * Absent-argument semantics differ by kind (this is the subtle part):
+ * - `required`: the arg MUST be present and non-null; absent/null → deny. This
+ *   is what stops a caller dodging a value check by simply omitting the arg.
+ * - `min` / `max`: numeric floor / ceiling. An ABSENT (or null) arg does not
+ *   apply — there is nothing to bound. A present non-numeric arg is a typed
+ *   `invalid_argument` failure (never coerced), not a deny.
+ * - `denyValue`: exact-match denylist — a present arg equal to `value` denies.
+ * - `allowValues`: allowlist/enum — a PRESENT arg must be one of `values`;
+ *   outside the set → deny. Absent passes (pair with `required` to force it).
+ *   An empty `values` set is a contradictory config → typed fail.
  */
 export const argumentConstraintValidator = v.union(
+  v.object({
+    arg: v.string(),
+    kind: v.literal('required')
+  }),
+  v.object({
+    arg: v.string(),
+    kind: v.literal('min'),
+    value: v.number()
+  }),
   v.object({
     arg: v.string(),
     kind: v.literal('max'),
@@ -53,7 +75,12 @@ export const argumentConstraintValidator = v.union(
   v.object({
     arg: v.string(),
     kind: v.literal('denyValue'),
-    value: v.union(v.string(), v.number(), v.boolean())
+    value: constraintScalar
+  }),
+  v.object({
+    arg: v.string(),
+    kind: v.literal('allowValues'),
+    values: v.array(constraintScalar)
   })
 );
 

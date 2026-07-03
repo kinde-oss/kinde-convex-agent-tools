@@ -1,4 +1,9 @@
-import type {GenericActionCtx, GenericDataModel} from 'convex/server';
+import type {
+  FunctionArgs,
+  FunctionReturnType,
+  GenericActionCtx,
+  GenericDataModel
+} from 'convex/server';
 import type {ComponentApi} from '../component/_generated/component.js';
 
 export type {ComponentApi} from '../component/_generated/component.js';
@@ -12,6 +17,67 @@ export type RunFullCtx = Pick<
   GenericActionCtx<GenericDataModel>,
   'runQuery' | 'runMutation' | 'runAction'
 >;
+
+// The component functions' exact arg/return types, recovered from the generated
+// component API so the client never re-declares (or drifts from) the validators.
+type CheckToolArgs = FunctionArgs<ComponentApi['enforce']['checkTool']>;
+type GrantArgs = FunctionArgs<ComponentApi['policy']['grant']>;
+type RevokeGrantArgs = FunctionArgs<ComponentApi['policy']['revokeGrant']>;
+type SetToolRiskArgs = FunctionArgs<ComponentApi['policy']['setToolRisk']>;
+
+/** The machine-readable decision returned by {@link GateApi.checkTool}. */
+export type GateResult = FunctionReturnType<
+  ComponentApi['enforce']['checkTool']
+>;
+type GrantResult = FunctionReturnType<ComponentApi['policy']['grant']>;
+type RevokeGrantResult = FunctionReturnType<
+  ComponentApi['policy']['revokeGrant']
+>;
+type SetToolRiskResult = FunctionReturnType<
+  ComponentApi['policy']['setToolRisk']
+>;
+
+/** Everything about a `checkTool` call except the subject (which is positional). */
+export type CheckToolOptions = Omit<CheckToolArgs, 'subject'>;
+/** Everything about a grant except the subject (which is positional). */
+export type GrantOptions = Omit<GrantArgs, 'subject'>;
+/** Everything about a revoke except the subject (which is positional). */
+export type RevokeGrantOptions = Omit<RevokeGrantArgs, 'subject'>;
+
+/** The decision surface of the client. */
+export interface GateApi {
+  /**
+   * Run the deny-by-default decision spine for a tool call and return the
+   * machine-readable decision. Thin pass-through to the component mutation.
+   */
+  checkTool(
+    ctx: RunMutationCtx,
+    subject: string,
+    opts: CheckToolOptions
+  ): Promise<GateResult>;
+}
+
+/** The policy-administration surface of the client. */
+export interface PolicyApi {
+  /** Upsert a subject-scoped grant for (subject, tool). */
+  grant(
+    ctx: RunMutationCtx,
+    subject: string,
+    opts: GrantOptions
+  ): Promise<GrantResult>;
+  /** Revoke the (subject, tool) grant. Typed-fails if none exists. */
+  revokeGrant(
+    ctx: RunMutationCtx,
+    subject: string,
+    opts: RevokeGrantOptions
+  ): Promise<RevokeGrantResult>;
+  /** Upsert the per-tool risk level, creating the policy row if absent. */
+  setToolRisk(
+    ctx: RunMutationCtx,
+    tool: string,
+    level: SetToolRiskArgs['level']
+  ): Promise<SetToolRiskResult>;
+}
 
 /**
  * A tool call presented to the authorization layer, in framework-agnostic form.
@@ -88,19 +154,36 @@ export interface AgentToolsOptions {
  * export const agentTools = new AgentTools(components.tools);
  * ```
  *
- * P0 is a shell: it holds the component reference and the composition options.
- * The decision API (`allow` / `deny` / `require-human-approval`), the
- * deny-by-default allowlist, metering, and the single audit row per call arrive
- * in later phases as thin pass-throughs to component functions. The optional
+ * The public surface is namespaced: `gate` runs decisions and `policy`
+ * administers grants/risk. Both are thin pass-throughs to component functions —
+ * the app calls them from an action/mutation and threads its `ctx`. The
+ * `verifyCaller`/`billingCheck` slots remain stubbed (P7/P5), and the optional
  * app-mounted HTTP handlers (the Twilio pattern: defined in client code so they
- * can read the app's `ctx.auth`/env and call {@link VerifyCaller}) also land
- * later; the seam is the client-owns-the-handler shape, not core code.
+ * can read the app's `ctx.auth`/env and call {@link VerifyCaller}) land later.
  */
 export class AgentTools {
+  /** Decision surface: run the deny-by-default spine for a tool call. */
+  readonly gate: GateApi;
+  /** Policy administration: grant/revoke tools and set per-tool risk. */
+  readonly policy: PolicyApi;
+
   constructor(
     public readonly component: ComponentApi,
     public readonly options: AgentToolsOptions = {}
-  ) {}
+  ) {
+    this.gate = {
+      checkTool: (ctx, subject, opts) =>
+        ctx.runMutation(component.enforce.checkTool, {subject, ...opts})
+    };
+    this.policy = {
+      grant: (ctx, subject, opts) =>
+        ctx.runMutation(component.policy.grant, {subject, ...opts}),
+      revokeGrant: (ctx, subject, opts) =>
+        ctx.runMutation(component.policy.revokeGrant, {subject, ...opts}),
+      setToolRisk: (ctx, tool, level) =>
+        ctx.runMutation(component.policy.setToolRisk, {tool, level})
+    };
+  }
 
   /** The env var the component reads its HMAC signing secret from. */
   get signingSecretEnvVar(): string {
