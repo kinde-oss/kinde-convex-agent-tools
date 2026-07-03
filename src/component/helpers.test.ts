@@ -5,6 +5,7 @@ import {
   effectiveRisk,
   evaluateConstraints,
   grantRevocationKey,
+  parseBillingResult,
   requiresApproval,
   resolveRevocation
 } from './helpers.js';
@@ -251,6 +252,40 @@ describe('grantRevocationKey — stable (subject, tool) encoding', () => {
     // Distinct pairs never collide, even across the boundary.
     expect(grantRevocationKey('a', 'bc')).not.toBe(
       grantRevocationKey('ab', 'c')
+    );
+  });
+});
+
+describe('parseBillingResult — untrusted billing return is validated', () => {
+  test('accepts a well-formed allow/deny result', () => {
+    expect(parseBillingResult({allow: true})).toEqual({allow: true});
+    expect(parseBillingResult({allow: false, reason: 'nope'})).toEqual({
+      allow: false,
+      reason: 'nope'
+    });
+  });
+
+  test('drops an undefined reason cleanly', () => {
+    expect(parseBillingResult({allow: true, reason: undefined})).toEqual({
+      allow: true
+    });
+  });
+
+  test('a non-object return → typed billing_check_malformed', () => {
+    for (const bad of [null, undefined, 42, 'nope', true]) {
+      expect(() => parseBillingResult(bad)).toThrow(ConvexError);
+    }
+  });
+
+  test('a missing or non-boolean allow → typed billing_check_malformed', () => {
+    expect(() => parseBillingResult({})).toThrow(ConvexError);
+    expect(() => parseBillingResult({allow: 'yes'})).toThrow(ConvexError);
+    expect(() => parseBillingResult({ok: 1})).toThrow(ConvexError);
+  });
+
+  test('a non-string reason → typed billing_check_malformed', () => {
+    expect(() => parseBillingResult({allow: false, reason: 5})).toThrow(
+      ConvexError
     );
   });
 });

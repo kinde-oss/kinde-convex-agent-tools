@@ -1,12 +1,28 @@
 import type {
   FunctionArgs,
+  FunctionReference,
   FunctionReturnType,
   GenericActionCtx,
   GenericDataModel
 } from 'convex/server';
+import {createFunctionHandle} from 'convex/server';
 import type {ComponentApi} from '../component/_generated/component.js';
+import type {
+  BillingCheckPayload,
+  BillingCheckResult
+} from '../component/validators.js';
 
 export type {ComponentApi} from '../component/_generated/component.js';
+export type {
+  BillingCheckPayload,
+  BillingCheckResult
+} from '../component/validators.js';
+// Runtime validators for the billing seam, re-exported so an app can build its
+// billingCheck mutation with the exact shared arg/return shapes.
+export {
+  billingCheckPayloadValidator,
+  billingCheckResultValidator
+} from '../component/validators.js';
 
 export type RunQueryCtx = Pick<GenericActionCtx<GenericDataModel>, 'runQuery'>;
 export type RunMutationCtx = Pick<
@@ -180,29 +196,31 @@ export interface ToolCall {
  */
 export type VerifyCaller = (request: Request) => Promise<unknown>;
 
-/** The outcome of a billing check for a tool call. */
-export interface BillingCheckResult {
-  /** Whether billing permits the call. */
-  allow: boolean;
-  /** Optional machine-readable reason when `allow` is false. */
-  reason?: string;
-}
-
 /**
- * Billing seam. App-supplied: decide whether billing permits a tool call. The
- * component composes with billing through this slot and imports no billing
- * package. STUBBED IN P0 — accepted and typed on {@link AgentToolsOptions}, not
- * yet consulted by any code path.
+ * Billing seam (P5). App-supplied: a FunctionReference to a MUTATION that
+ * decides whether billing permits a tool call. It receives a
+ * {@link BillingCheckPayload} (only the REDACTED digest — never raw args) and
+ * returns a {@link BillingCheckResult}. The component INVOKES it IN THE SAME
+ * TRANSACTION via a FunctionHandle (the client serializes this reference with
+ * `createFunctionHandle` and threads it into `checkTool`) — the core imports NO
+ * billing package. A mutation reference (not a query) mirrors billing's own
+ * spend-authority check, so composing across the suite is uniform.
  */
-export type BillingCheck = (call: ToolCall) => Promise<BillingCheckResult>;
+export type BillingCheck = FunctionReference<
+  'mutation',
+  'public' | 'internal',
+  BillingCheckPayload,
+  BillingCheckResult
+>;
 
 /**
  * Options for the {@link AgentTools} client.
  *
- * The `verifyCaller` and `billingCheck` slots are the composition seams for auth
- * and billing respectively: both are optional, app-supplied, and — in P0 —
- * typed and accepted but unused. `signingSecretEnvVar` names the env var the
- * component reads its HMAC signing secret from.
+ * `verifyCaller` and `billingCheck` are the composition seams for auth and
+ * billing. `billingCheck` is LIVE as of P5 — supply a mutation reference and the
+ * spine consults it during the budget step. `verifyCaller` remains stubbed
+ * (P7). `signingSecretEnvVar` names the env var the component reads its HMAC
+ * signing secret from.
  */
 export interface AgentToolsOptions {
   /**
@@ -214,7 +232,11 @@ export interface AgentToolsOptions {
   signingSecretEnvVar?: string;
   /** Optional caller-authentication seam. See {@link VerifyCaller}. STUBBED. */
   verifyCaller?: VerifyCaller;
-  /** Optional billing seam. See {@link BillingCheck}. STUBBED. */
+  /**
+   * Optional billing seam. See {@link BillingCheck}. When set, every
+   * `gate.checkTool` call is metered/gated by this mutation during the budget
+   * step; a not-allowed result denies `budget_exceeded`.
+   */
   billingCheck?: BillingCheck;
 }
 
@@ -253,8 +275,21 @@ export class AgentTools {
     public readonly options: AgentToolsOptions = {}
   ) {
     this.gate = {
-      checkTool: (ctx, subject, opts) =>
-        ctx.runMutation(component.enforce.checkTool, {subject, ...opts})
+      checkTool: async (ctx, subject, opts) => {
+        // Serialize the app's billingCheck reference to a FunctionHandle so it
+        // can cross the mutation boundary and be invoked inside the spine. This
+        // runs in the caller's Convex function context (where the app calls
+        // gate.checkTool), which is where createFunctionHandle is available.
+        const billingCheck =
+          options.billingCheck === undefined
+            ? undefined
+            : await createFunctionHandle(options.billingCheck);
+        return ctx.runMutation(component.enforce.checkTool, {
+          subject,
+          ...opts,
+          ...(billingCheck === undefined ? {} : {billingCheck})
+        });
+      }
     };
     this.policy = {
       grant: (ctx, subject, opts) =>

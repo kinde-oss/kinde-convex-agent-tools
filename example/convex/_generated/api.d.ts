@@ -9,11 +9,13 @@
  */
 
 import type * as example from '../example.js';
+import type * as fakeBilling from '../fakeBilling.js';
 
 import type {ApiFromModules, FilterApi, FunctionReference} from 'convex/server';
 
 declare const fullApi: ApiFromModules<{
   example: typeof example;
+  fakeBilling: typeof fakeBilling;
 }>;
 
 /**

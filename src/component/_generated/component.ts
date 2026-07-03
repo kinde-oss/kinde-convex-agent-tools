@@ -63,6 +63,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             string,
             string | number | boolean | null | Array<string>
           >;
+          billingCheck?: string;
           correlationId?: string | null;
           subject: string;
           tool: string;
@@ -71,7 +72,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           approvalId?: string;
           correlationId: string;
           decision: 'allow' | 'deny' | 'approve';
-          reason?: 'no_grant' | 'argument_denied' | 'revoked';
+          reason?:
+            | 'no_grant'
+            | 'argument_denied'
+            | 'revoked'
+            | 'budget_exceeded';
         },
         Name
       >;

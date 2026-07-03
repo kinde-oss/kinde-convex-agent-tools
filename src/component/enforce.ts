@@ -1,11 +1,13 @@
 import {v} from 'convex/values';
 import type {Infer} from 'convex/values';
+import type {FunctionHandle} from 'convex/server';
 import {mutation} from './_generated/server.js';
 import type {Id} from './_generated/dataModel.js';
 import {fail} from './errors.js';
 import {
   effectiveRisk,
   evaluateConstraints,
+  parseBillingResult,
   requiresApproval,
   resolveRevocation
 } from './helpers.js';
@@ -17,7 +19,13 @@ import {
   denyCodeValidator,
   nullableString
 } from './validators.js';
-import type {Decision, DenyCode, ReasonCode, RiskLevel} from './validators.js';
+import type {
+  BillingCheckPayload,
+  Decision,
+  DenyCode,
+  ReasonCode,
+  RiskLevel
+} from './validators.js';
 
 /**
  * The machine-readable decision returned to the caller. `reason` is present
@@ -59,7 +67,13 @@ type DecisionResult = Infer<typeof decisionResultValidator>;
  *      evaluated against `args`; a violation → deny `argument_denied`. A
  *      contradictory config (a `noArgs` tool carrying constraints) is a typed
  *      failure, never coerced.
- *   d. Budget — NO-OP in P3 (billing seam is P5). // SEAM
+ *   d. Budget — the OPTIONAL injected billing seam (P5). When the client threads
+ *      a `billingCheck` FunctionHandle, the spine invokes it IN THIS TRANSACTION
+ *      with a redacted payload (never raw args); a not-allowed result denies
+ *      `budget_exceeded`. Absent → skipped (standalone operation unchanged). The
+ *      component imports no billing package — the check is injected, not
+ *      imported. Runs AFTER argument policy (a failed policy never consults
+ *      billing) and BEFORE risk.
  *   e. Risk — the effective risk (the stricter of grant vs tool-policy risk) is
  *      resolved; if it requires approval (threshold: `high`), the call routes to
  *      `approve` (one approvals row created) instead of allow.
@@ -73,13 +87,19 @@ export const checkTool = mutation({
     correlationId: v.optional(nullableString),
     // Optional TTL for an approval created by the risk gate. Ignored on
     // allow/deny; a non-positive value is a contradictory input (typed fail).
-    approvalTtlMs: v.optional(v.number())
+    approvalTtlMs: v.optional(v.number()),
+    // Optional billing seam: a serialized FunctionHandle (see convex
+    // `createFunctionHandle`) to an app-provided mutation the client threads in.
+    // The spine invokes it during the budget step; absent → budget skipped.
+    billingCheck: v.optional(v.string())
   },
   returns: decisionResultValidator,
   handler: async (ctx, args) => {
     const now = Date.now();
     const callArgs = args.args ?? {};
-    const incomingCorrelationId = args.correlationId ?? null;
+    // One correlation id for the whole call — used by the billing payload and by
+    // the single decision row, so they always share it.
+    const correlationId = args.correlationId ?? crypto.randomUUID();
     // Agent-scoped identity is P7; the subject is the acting identity and every
     // record is subject-scoped.
     const agent = null;
@@ -101,7 +121,6 @@ export const checkTool = mutation({
       reason: ReasonCode,
       approvalId: Id<'approvals'> | null
     ): Promise<{correlationId: string; toolCallId: Id<'toolCalls'>}> => {
-      const correlationId = incomingCorrelationId ?? crypto.randomUUID();
       await ctx.db.insert('audit', {
         subject: args.subject,
         agent,
@@ -223,7 +242,29 @@ export const checkTool = mutation({
       }
     }
 
-    // d. Budget — NO-OP in P3 (billing seam is P5). // SEAM
+    // d. Budget — the optional injected billing seam. When a `billingCheck`
+    // handle is threaded in, invoke it IN THIS TRANSACTION with a REDACTED
+    // payload (never raw args) and deny `budget_exceeded` on a not-allowed
+    // result. The return is validated (a malformed shape is a typed fail, never
+    // a silent allow). Absent → skipped, so standalone operation is unchanged.
+    if (args.billingCheck !== undefined) {
+      const handle = args.billingCheck as FunctionHandle<
+        'mutation',
+        BillingCheckPayload,
+        unknown
+      >;
+      const result = parseBillingResult(
+        await ctx.runMutation(handle, {
+          subject: args.subject,
+          tool: args.tool,
+          argDigest,
+          correlationId
+        })
+      );
+      if (!result.allow) {
+        return await deny('budget_exceeded');
+      }
+    }
 
     // e. Risk — resolve the effective (stricter) risk and route high-risk calls
     // to human approval instead of allowing them outright.

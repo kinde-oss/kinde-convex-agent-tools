@@ -47,13 +47,15 @@ export const revocationLevelValidator = v.union(
 
 /**
  * The machine-readable reason a call was DENIED. `revoked` is the revocation
- * overlay's active kill switch, which short-circuits BEFORE the allowlist (so a
- * revoked-but-granted call denies `revoked`, not `no_grant`). Never free text.
+ * overlay's active kill switch (short-circuits BEFORE the allowlist).
+ * `budget_exceeded` is the injected billing seam's not-allowed result (P5).
+ * Never free text.
  */
 export const denyCodeValidator = v.union(
   v.literal('no_grant'),
   v.literal('argument_denied'),
-  v.literal('revoked')
+  v.literal('revoked'),
+  v.literal('budget_exceeded')
 );
 
 /**
@@ -68,10 +70,32 @@ export const reasonCodeValidator = v.union(
   v.literal('no_grant'),
   v.literal('argument_denied'),
   v.literal('revoked'),
+  v.literal('budget_exceeded'),
   v.literal('approval_required'),
   v.literal('approval_approved'),
   v.literal('approval_denied')
 );
+
+/**
+ * The billing seam contract (P5). The component composes with billing by
+ * INVOKING an app-provided function through a {@link FunctionHandle} — it never
+ * imports a billing package. `billingCheckPayloadValidator` is what the spine
+ * sends (only the REDACTED `argDigest`, never raw args); `billingCheckResult`
+ * is what it expects back. Both sides share these validators so the boundary is
+ * typed; the component still runtime-validates the RETURN (a malformed return is
+ * a typed `billing_check_malformed` failure, never coerced).
+ */
+export const billingCheckPayloadValidator = v.object({
+  subject: v.string(),
+  tool: v.string(),
+  argDigest: v.string(),
+  correlationId: v.string()
+});
+
+export const billingCheckResultValidator = v.object({
+  allow: v.boolean(),
+  reason: v.optional(v.string())
+});
 
 /** The scalar values a constraint can carry (never arrays or null). */
 const constraintScalar = v.union(v.string(), v.number(), v.boolean());
@@ -143,3 +167,5 @@ export type ReasonCode = Infer<typeof reasonCodeValidator>;
 export type ArgumentConstraint = Infer<typeof argumentConstraintValidator>;
 export type ToolArgs = Infer<typeof argsValidator>;
 export type ToolArgValue = ToolArgs[string];
+export type BillingCheckPayload = Infer<typeof billingCheckPayloadValidator>;
+export type BillingCheckResult = Infer<typeof billingCheckResultValidator>;

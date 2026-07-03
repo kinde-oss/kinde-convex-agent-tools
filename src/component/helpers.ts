@@ -1,10 +1,39 @@
 import {fail} from './errors.js';
 import type {
   ArgumentConstraint,
+  BillingCheckResult,
   RevocationLevel,
   RiskLevel,
   ToolArgs
 } from './validators.js';
+
+/**
+ * Narrow the UNTRUSTED value returned by an injected billing check into a typed
+ * {@link BillingCheckResult}. The billing function is app-provided and its
+ * return crosses a function boundary, so it is validated here rather than
+ * trusted (the same discipline as wrapping an external JSON parse): a non-object
+ * return, a missing/!boolean `allow`, or a non-string `reason` is a typed
+ * `billing_check_malformed` failure — never coerced into a silent allow.
+ */
+export function parseBillingResult(value: unknown): BillingCheckResult {
+  if (typeof value !== 'object' || value === null) {
+    fail('billing_check_malformed', 'The billing check must return an object.');
+  }
+  const {allow, reason} = value as {allow?: unknown; reason?: unknown};
+  if (typeof allow !== 'boolean') {
+    fail(
+      'billing_check_malformed',
+      'The billing check result must carry a boolean `allow`.'
+    );
+  }
+  if (reason !== undefined && typeof reason !== 'string') {
+    fail(
+      'billing_check_malformed',
+      'The billing check result `reason` must be a string when present.'
+    );
+  }
+  return reason === undefined ? {allow} : {allow, reason};
+}
 
 // Revocation levels in precedence order, most → least broad. A higher level
 // wins regardless of lower-level state (global > org > agent > grant).
