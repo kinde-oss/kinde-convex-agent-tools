@@ -1,5 +1,53 @@
 import {fail} from './errors.js';
-import type {ArgumentConstraint, RiskLevel, ToolArgs} from './validators.js';
+import type {
+  ArgumentConstraint,
+  RevocationLevel,
+  RiskLevel,
+  ToolArgs
+} from './validators.js';
+
+// Revocation levels in precedence order, most → least broad. A higher level
+// wins regardless of lower-level state (global > org > agent > grant).
+const REVOCATION_PRECEDENCE: readonly RevocationLevel[] = [
+  'global',
+  'org',
+  'agent',
+  'grant'
+];
+
+/** The outcome of resolving the revocation overlay for one call. */
+export type RevocationResolution =
+  | {revoked: true; level: RevocationLevel}
+  | {revoked: false};
+
+/**
+ * Given the set of levels at which an ACTIVE revocation applies to a call,
+ * return whether the call is revoked and — if so — the HIGHEST-precedence level
+ * that applies. Pure and exhaustive over the four levels: a higher level denies
+ * regardless of lower-level state (global > org > agent > grant).
+ */
+export function resolveRevocation(
+  presentLevels: Iterable<RevocationLevel>
+): RevocationResolution {
+  const present = new Set(presentLevels);
+  for (const level of REVOCATION_PRECEDENCE) {
+    if (present.has(level)) {
+      return {revoked: true, level};
+    }
+  }
+  return {revoked: false};
+}
+
+/**
+ * The stable `targetId` key for a `grant`-level revocation: the (subject, tool)
+ * pair encoded as `JSON.stringify([subject, tool])`. JSON encoding is
+ * unambiguous for arbitrary subject/tool strings (no separator-collision), and
+ * the spine computes the same key when checking the overlay, so a `grant`
+ * revocation matches exactly the call it targets.
+ */
+export function grantRevocationKey(subject: string, tool: string): string {
+  return JSON.stringify([subject, tool]);
+}
 
 // Ordering of risk levels, least → most strict. Used to pick the binding risk
 // when a grant and a tool policy both declare one.

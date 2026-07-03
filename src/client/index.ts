@@ -27,6 +27,13 @@ type SetToolRiskArgs = FunctionArgs<ComponentApi['policy']['setToolRisk']>;
 type ApproveArgs = FunctionArgs<ComponentApi['approvals']['approve']>;
 type DenyApprovalArgs = FunctionArgs<ComponentApi['approvals']['deny']>;
 type GetStatusArgs = FunctionArgs<ComponentApi['approvals']['getStatus']>;
+type RevokeArgs = FunctionArgs<ComponentApi['revocations']['revoke']>;
+type LiftRevocationArgs = FunctionArgs<
+  ComponentApi['revocations']['liftRevocation']
+>;
+type RevocationStatusArgs = FunctionArgs<
+  ComponentApi['revocations']['getStatus']
+>;
 
 /** The machine-readable decision returned by {@link GateApi.checkTool}. */
 export type GateResult = FunctionReturnType<
@@ -45,6 +52,23 @@ type DenyApprovalResult = FunctionReturnType<ComponentApi['approvals']['deny']>;
 export type ApprovalStatusResult = FunctionReturnType<
   ComponentApi['approvals']['getStatus']
 >;
+type RevokeResult = FunctionReturnType<ComponentApi['revocations']['revoke']>;
+type LiftRevocationResult = FunctionReturnType<
+  ComponentApi['revocations']['liftRevocation']
+>;
+/** The status of a revocation target, from {@link RevocationsApi.getStatus}. */
+export type RevocationStatusResult = FunctionReturnType<
+  ComponentApi['revocations']['getStatus']
+>;
+
+/**
+ * The stable `targetId` for a `grant`-level revocation: the (subject, tool)
+ * pair, encoded to match the component's scheme exactly. Use it to build the
+ * `targetId` for `revocations.revoke`/`liftRevocation` at the `grant` level.
+ */
+export function grantRevocationKey(subject: string, tool: string): string {
+  return JSON.stringify([subject, tool]);
+}
 
 /** Everything about a `checkTool` call except the subject (which is positional). */
 export type CheckToolOptions = Omit<CheckToolArgs, 'subject'>;
@@ -108,6 +132,28 @@ export interface ApprovalsApi {
     ctx: RunQueryCtx,
     approvalId: GetStatusArgs['approvalId']
   ): Promise<ApprovalStatusResult>;
+}
+
+/**
+ * The revocation kill-switch surface of the client. Distinct from
+ * `policy.revokeGrant` (which DELETES a grant): revocation is a non-destructive
+ * overlay that denies a target reactively while leaving its grant intact, and
+ * supports levels above a single grant (agent, org, global). For a `grant`-level
+ * target, build `opts.targetId` with {@link grantRevocationKey}.
+ */
+export interface RevocationsApi {
+  /** Revoke a target (create/reactivate the overlay row). */
+  revoke(ctx: RunMutationCtx, opts: RevokeArgs): Promise<RevokeResult>;
+  /** Lift a revocation (deactivate the overlay row; typed-fails if not active). */
+  liftRevocation(
+    ctx: RunMutationCtx,
+    opts: LiftRevocationArgs
+  ): Promise<LiftRevocationResult>;
+  /** Read whether a target is currently revoked. Read-only. */
+  getStatus(
+    ctx: RunQueryCtx,
+    opts: RevocationStatusArgs
+  ): Promise<RevocationStatusResult>;
 }
 
 /**
@@ -199,6 +245,8 @@ export class AgentTools {
   readonly policy: PolicyApi;
   /** Human-in-the-loop: resolve and inspect approvals. */
   readonly approvals: ApprovalsApi;
+  /** Revocation kill switch: reactively deny a target without deleting grants. */
+  readonly revocations: RevocationsApi;
 
   constructor(
     public readonly component: ComponentApi,
@@ -227,6 +275,14 @@ export class AgentTools {
         }),
       getStatus: (ctx, approvalId) =>
         ctx.runQuery(component.approvals.getStatus, {approvalId})
+    };
+    this.revocations = {
+      revoke: (ctx, opts) =>
+        ctx.runMutation(component.revocations.revoke, opts),
+      liftRevocation: (ctx, opts) =>
+        ctx.runMutation(component.revocations.liftRevocation, opts),
+      getStatus: (ctx, opts) =>
+        ctx.runQuery(component.revocations.getStatus, opts)
     };
   }
 

@@ -71,7 +71,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           approvalId?: string;
           correlationId: string;
           decision: 'allow' | 'deny' | 'approve';
-          reason?: 'no_grant' | 'argument_denied';
+          reason?: 'no_grant' | 'argument_denied' | 'revoked';
         },
         Name
       >;
@@ -114,6 +114,45 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         'mutation',
         'internal',
         {level: 'low' | 'medium' | 'high'; tool: string},
+        string,
+        Name
+      >;
+    };
+    revocations: {
+      getStatus: FunctionReference<
+        'query',
+        'internal',
+        {
+          targetId?: string | null;
+          targetType: 'global' | 'org' | 'agent' | 'grant';
+        },
+        {
+          active: boolean;
+          createdAt: number | null;
+          reason: string | null;
+          revokedBy: string | null;
+        },
+        Name
+      >;
+      liftRevocation: FunctionReference<
+        'mutation',
+        'internal',
+        {
+          targetId?: string | null;
+          targetType: 'global' | 'org' | 'agent' | 'grant';
+        },
+        null,
+        Name
+      >;
+      revoke: FunctionReference<
+        'mutation',
+        'internal',
+        {
+          reason: string;
+          revokedBy?: string | null;
+          targetId?: string | null;
+          targetType: 'global' | 'org' | 'agent' | 'grant';
+        },
         string,
         Name
       >;

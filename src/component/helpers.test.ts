@@ -4,9 +4,11 @@ import {
   assertConstraintsWellFormed,
   effectiveRisk,
   evaluateConstraints,
-  requiresApproval
+  grantRevocationKey,
+  requiresApproval,
+  resolveRevocation
 } from './helpers.js';
-import type {ArgumentConstraint} from './validators.js';
+import type {ArgumentConstraint, RevocationLevel} from './validators.js';
 
 // Hardening: stub ALL required component env vars before every test.
 beforeEach(() => {
@@ -185,5 +187,70 @@ describe('requiresApproval — threshold is high', () => {
     expect(requiresApproval('medium')).toBe(false);
     expect(requiresApproval('low')).toBe(false);
     expect(requiresApproval(null)).toBe(false);
+  });
+});
+
+describe('resolveRevocation — precedence global > org > agent > grant', () => {
+  test('no levels present → not revoked', () => {
+    expect(resolveRevocation([])).toEqual({revoked: false});
+  });
+
+  test('a single level present → revoked at that level', () => {
+    const levels: RevocationLevel[] = ['global', 'org', 'agent', 'grant'];
+    for (const level of levels) {
+      expect(resolveRevocation([level])).toEqual({revoked: true, level});
+    }
+  });
+
+  test('highest present wins for every pair', () => {
+    expect(resolveRevocation(['grant', 'agent'])).toEqual({
+      revoked: true,
+      level: 'agent'
+    });
+    expect(resolveRevocation(['grant', 'org'])).toEqual({
+      revoked: true,
+      level: 'org'
+    });
+    expect(resolveRevocation(['agent', 'org'])).toEqual({
+      revoked: true,
+      level: 'org'
+    });
+    expect(resolveRevocation(['grant', 'agent', 'org', 'global'])).toEqual({
+      revoked: true,
+      level: 'global'
+    });
+  });
+
+  test('order of the input does not matter (set semantics)', () => {
+    expect(resolveRevocation(['agent', 'grant'])).toEqual(
+      resolveRevocation(['grant', 'agent'])
+    );
+  });
+
+  test('exhaustive: global dominates every combination it appears in', () => {
+    const combos: RevocationLevel[][] = [
+      ['global'],
+      ['global', 'grant'],
+      ['global', 'agent', 'grant'],
+      ['global', 'org', 'agent', 'grant']
+    ];
+    for (const combo of combos) {
+      expect(resolveRevocation(combo)).toEqual({
+        revoked: true,
+        level: 'global'
+      });
+    }
+  });
+});
+
+describe('grantRevocationKey — stable (subject, tool) encoding', () => {
+  test('is deterministic and unambiguous', () => {
+    expect(grantRevocationKey('user_alice', 'search')).toBe(
+      grantRevocationKey('user_alice', 'search')
+    );
+    // Distinct pairs never collide, even across the boundary.
+    expect(grantRevocationKey('a', 'bc')).not.toBe(
+      grantRevocationKey('ab', 'c')
+    );
   });
 });

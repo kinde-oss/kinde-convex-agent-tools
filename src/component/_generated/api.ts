@@ -15,6 +15,7 @@ import type * as errors from '../errors.js';
 import type * as helpers from '../helpers.js';
 import type * as policy from '../policy.js';
 import type * as redact from '../redact.js';
+import type * as revocations from '../revocations.js';
 import type * as validators from '../validators.js';
 
 import type {ApiFromModules, FilterApi, FunctionReference} from 'convex/server';
@@ -28,6 +29,7 @@ const fullApi: ApiFromModules<{
   helpers: typeof helpers;
   policy: typeof policy;
   redact: typeof redact;
+  revocations: typeof revocations;
   validators: typeof validators;
 }> = anyApi as any;
 

@@ -7,6 +7,7 @@ import {
   nullableNumber,
   nullableString,
   reasonCodeValidator,
+  revocationLevelValidator,
   riskLevelValidator
 } from './validators.js';
 
@@ -119,5 +120,30 @@ export default defineSchema({
     ts: v.number()
   })
     .index('by_subject_ts', ['subject', 'ts'])
-    .index('by_correlation', ['correlationId'])
+    .index('by_correlation', ['correlationId']),
+
+  /**
+   * The revocation overlay: a reactive kill switch checked by the spine BEFORE
+   * the allowlist, so a revoked target denies even with a valid grant. A
+   * revocation is NON-DESTRUCTIVE — it never touches the grant. `targetType` +
+   * `targetId` name what is revoked, keyed as:
+   *   - `global` → `targetId` is null (revokes everything);
+   *   - `org`    → the org code;
+   *   - `agent`  → the agent id;
+   *   - `grant`  → the (subject, tool) key `JSON.stringify([subject, tool])`
+   *                (see `grantRevocationKey`).
+   * Lifting is NON-destructive too: `active` flips to false and the overlay
+   * ignores inactive rows (history is preserved). At most one row exists per
+   * (targetType, targetId) — it is reused across revoke/lift cycles.
+   */
+  revocations: defineTable({
+    targetType: revocationLevelValidator,
+    targetId: nullableString,
+    reason: v.string(),
+    revokedBy: nullableString,
+    active: v.boolean(),
+    createdAt: v.number()
+  })
+    .index('by_target', ['targetType', 'targetId'])
+    .index('by_active', ['active'])
 });

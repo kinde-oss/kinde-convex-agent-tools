@@ -33,13 +33,27 @@ export const approvalStatusValidator = v.union(
 );
 
 /**
- * The machine-readable reason a call was DENIED. This is the P1 `DenyCode`
- * union surfaced on a deny decision; it grows as later phases add deny paths
- * (budget, risk, revocation). Never free text.
+ * The level a revocation targets, most → least broad: `global` (everything),
+ * `org` (a tenant), `agent` (one agent identity), `grant` (one subject+tool
+ * grant). Precedence when several apply is exactly this order — see
+ * `resolveRevocation`.
+ */
+export const revocationLevelValidator = v.union(
+  v.literal('global'),
+  v.literal('org'),
+  v.literal('agent'),
+  v.literal('grant')
+);
+
+/**
+ * The machine-readable reason a call was DENIED. `revoked` is the revocation
+ * overlay's active kill switch, which short-circuits BEFORE the allowlist (so a
+ * revoked-but-granted call denies `revoked`, not `no_grant`). Never free text.
  */
 export const denyCodeValidator = v.union(
   v.literal('no_grant'),
-  v.literal('argument_denied')
+  v.literal('argument_denied'),
+  v.literal('revoked')
 );
 
 /**
@@ -53,6 +67,7 @@ export const reasonCodeValidator = v.union(
   v.literal('granted'),
   v.literal('no_grant'),
   v.literal('argument_denied'),
+  v.literal('revoked'),
   v.literal('approval_required'),
   v.literal('approval_approved'),
   v.literal('approval_denied')
@@ -121,6 +136,7 @@ export const nullableNumber = v.union(v.number(), v.null());
 
 export type Decision = Infer<typeof decisionValidator>;
 export type RiskLevel = Infer<typeof riskLevelValidator>;
+export type RevocationLevel = Infer<typeof revocationLevelValidator>;
 export type ApprovalStatus = Infer<typeof approvalStatusValidator>;
 export type DenyCode = Infer<typeof denyCodeValidator>;
 export type ReasonCode = Infer<typeof reasonCodeValidator>;

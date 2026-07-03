@@ -6,8 +6,10 @@ import {fail} from './errors.js';
 import {
   effectiveRisk,
   evaluateConstraints,
-  requiresApproval
+  requiresApproval,
+  resolveRevocation
 } from './helpers.js';
+import {activeRevocationLevels} from './revocations.js';
 import {redactArgs} from './redact.js';
 import {
   argsValidator,
@@ -43,6 +45,12 @@ type DecisionResult = Infer<typeof decisionResultValidator>;
  * `allow`/`deny`/`approve` so exactly one decision is recorded):
  *   a. Identity — the subject is trusted input (the `verifyCaller` slot is P7);
  *      `agent` is null until agent-scoped identity lands.
+ *   a.5 Revocation overlay (ACTIVE kill switch) — checked BEFORE the allowlist,
+ *      so a revoked target denies `revoked` even with a perfectly valid grant,
+ *      and a revoked-AND-ungranted call still denies `revoked` (the overlay
+ *      short-circuits, so `revoked` wins over `no_grant`). Precedence among
+ *      levels is global > org > agent > grant. Re-queried every call (no
+ *      caching) — that is what makes revocation reactive.
  *   b. Allowlist (DENY-BY-DEFAULT) — a matching `toolGrant` for (subject, tool)
  *      must exist. No grant → deny `no_grant`. This is the headline inversion,
  *      and it runs BEFORE risk, so an out-of-allowlist high-risk tool is denied
@@ -158,6 +166,22 @@ export const checkTool = mutation({
       await ctx.db.patch('toolCalls', toolCallId, {approvalId});
       return {decision: 'approve', approvalId, correlationId};
     };
+
+    // a.5 Revocation overlay: an ACTIVE kill switch that short-circuits BEFORE
+    // the allowlist. Re-queried every call (no caching) so a revoke denies the
+    // very next checkTool. `org` is not in the identity model yet (null);
+    // `agent` is null until P7 — both are structurally supported by the query.
+    const revoked = resolveRevocation(
+      await activeRevocationLevels(ctx, {
+        subject: args.subject,
+        tool: args.tool,
+        agent,
+        org: null
+      })
+    );
+    if (revoked.revoked) {
+      return await deny('revoked');
+    }
 
     // b. Allowlist (deny-by-default): the absence of a grant IS the denial.
     const grant = await ctx.db
