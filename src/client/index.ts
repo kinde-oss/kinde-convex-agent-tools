@@ -18,6 +18,13 @@ export type {
   BillingCheckPayload,
   BillingCheckResult
 } from '../component/validators.js';
+// The app-mountable HTTP seam (client-side; see ./http.ts — the Twilio pattern).
+export {registerRoutes} from './http.js';
+export type {
+  RegisterRoutesOptions,
+  VerifyCaller,
+  VerifiedCaller
+} from './http.js';
 // Runtime validators for the billing seam, re-exported so an app can build its
 // billingCheck mutation with the exact shared arg/return shapes.
 export {
@@ -236,15 +243,6 @@ export interface ToolCall {
 }
 
 /**
- * Caller-authentication seam. App-supplied: authenticate a direct/cross-app
- * caller and return the proven caller identity (throw to reject). The component
- * composes with auth through this slot + a plain subject; it imports no auth
- * package. STUBBED IN P0 — accepted and typed on {@link AgentToolsOptions}, not
- * yet consulted by any code path.
- */
-export type VerifyCaller = (request: Request) => Promise<unknown>;
-
-/**
  * Billing seam (P5). App-supplied: a FunctionReference to a MUTATION that
  * decides whether billing permits a tool call. It receives a
  * {@link BillingCheckPayload} (only the REDACTED digest — never raw args) and
@@ -262,12 +260,11 @@ export type BillingCheck = FunctionReference<
 >;
 
 /**
- * Options for the {@link AgentTools} client.
- *
- * `verifyCaller` and `billingCheck` are the composition seams for auth and
- * billing. `billingCheck` is LIVE as of P5 — supply a mutation reference and the
- * spine consults it during the budget step. `verifyCaller` remains stubbed
- * (P7). `signingSecretEnvVar` names the env var the component reads its HMAC
+ * Options for the {@link AgentTools} client. `billingCheck` is the billing
+ * composition seam (P5). The AUTH seam (`verifyCaller`) is NOT here — it belongs
+ * to the HTTP path only, so it lives on the app-mounted route's
+ * {@link RegisterRoutesOptions}; in-Convex callers pass a trusted subject
+ * directly. `signingSecretEnvVar` names the env var the component reads its HMAC
  * signing secret from.
  */
 export interface AgentToolsOptions {
@@ -278,8 +275,6 @@ export interface AgentToolsOptions {
    * if the app mounts the component under a different secret var.
    */
   signingSecretEnvVar?: string;
-  /** Optional caller-authentication seam. See {@link VerifyCaller}. STUBBED. */
-  verifyCaller?: VerifyCaller;
   /**
    * Optional billing seam. See {@link BillingCheck}. When set, every
    * `gate.checkTool` call is metered/gated by this mutation during the budget
@@ -304,9 +299,9 @@ export interface AgentToolsOptions {
  * The public surface is namespaced: `gate` runs decisions and `policy`
  * administers grants/risk. Both are thin pass-throughs to component functions —
  * the app calls them from an action/mutation and threads its `ctx`. The
- * `verifyCaller`/`billingCheck` slots remain stubbed (P7/P5), and the optional
- * app-mounted HTTP handlers (the Twilio pattern: defined in client code so they
- * can read the app's `ctx.auth`/env and call {@link VerifyCaller}) land later.
+ * `billingCheck` seam is live (P5). The AUTH seam is the app-mounted HTTP route
+ * (`registerRoutes`, the Twilio pattern: defined in client code so it runs in
+ * the app's HTTP context and can call the app-supplied `verifyCaller`).
  */
 export class AgentTools {
   /** Decision surface: run the deny-by-default spine for a tool call. */
