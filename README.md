@@ -1,6 +1,6 @@
 # Kinde Convex Agent Tools
 
-The Kinde agent tools authorization component for [Convex](https://convex.dev) — the in-app tool-call authorization layer for AI agents, backed by Kinde.
+The Kinde agent tools authorization component for [Convex](https://convex.dev) — tool-call authorization for AI agents: deny-by-default grants, per-argument policy, human approval for high-risk tools, reactive revocation, an optional budget seam, and an audit row for every decision.
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com) [![Kinde Docs](https://img.shields.io/badge/Kinde-Docs-eee?style=flat-square)](https://kinde.com/docs/developer-tools) [![Kinde Community](https://img.shields.io/badge/Kinde-Community-eee?style=flat-square)](https://thekindecommunity.slack.com)
 
@@ -15,7 +15,7 @@ This package is a Convex component plus a thin client. Day-to-day development:
 - `npm run lint`: run ESLint.
 - `npm run format`: run Prettier over the repo.
 
-The `example/` directory is a runnable reference app that installs the component via `app.use` and will exercise every layer end to end as the component grows.
+The `example/` directory is a runnable reference app that installs the component via `app.use` and exercises every layer end to end; `example/convex/example.ts` shows the intended usage of each function and `example/convex/e2e.test.ts` tells the full story as one test.
 
 ### Initial set up
 
@@ -51,17 +51,9 @@ The `example/` directory is a runnable reference app that installs the component
 
 ## Usage
 
-This component is the in-app tool-call authorization layer for AI agents on Convex. When an agent goes to use a tool, the call passes through the component, which decides **allow** / **deny** / **require-human-approval**, enforces a deny-by-default allowlist, meters the call, and writes exactly one audit row. Its wedge is location: it runs _inside_ the Convex app, in the same transaction as your data.
-
-The core is framework-agnostic — it exposes a decision API taking plain inputs (`subject`, `tool`, `args`), never framework objects. It composes with authentication via a subject plus an optional `verifyCaller` slot, and with billing via an optional `billingCheck` slot, and imports neither. Thin optional adapters (MCP/Mastra/LangChain) live in `example/` or optional sub-exports, never in core.
-
-> **Honest limitation.** This is an in-app decision API the developer calls or wraps a tool with — **not** a network proxy.
-
-> **Status.** `0.1.0` is the P0 scaffold: the component structure, the client shell with the `verifyCaller`/`billingCheck` composition seams, and the test harness. The decision API, allowlist, metering, approval gate, and audit log land in subsequent phases. The subsections below are placeholders filled in as those phases ship.
+This component gives a Convex app a complete authorization story for autonomous and supervised agents: it decides every tool call through a single `checkTool` gate against a deny-by-default allowlist, enforces per-argument policy, routes high-risk tools to human approval, applies a reactive revocation kill switch, optionally consults a billing seam for budget, and writes exactly one audit row per decision — all in a single Convex transaction. Every decision takes plain inputs (a `subject`, a `tool`, and its `args`); the authentication of the caller and the billing budget are separate, app-composed concerns (see the seams below).
 
 ### Install and wire up
-
-_Placeholder — the full install and wiring walkthrough lands alongside the decision API._
 
 Install the package:
 
@@ -69,12 +61,12 @@ Install the package:
 npm i @kinde-oss/kinde-convex-agent-tools
 ```
 
-Add the component to your app's `convex/convex.config.ts` and wire its environment:
+Add the component to your app's `convex/convex.config.ts` and pass through its environment:
 
 ```ts
 import {defineApp} from 'convex/server';
 import {v} from 'convex/values';
-import tools from '@kinde-oss/kinde-convex-agent-tools/convex.config.js';
+import agentTools from '@kinde-oss/kinde-convex-agent-tools/convex.config.js';
 
 const app = defineApp({
   env: {
@@ -82,7 +74,7 @@ const app = defineApp({
   }
 });
 
-app.use(tools, {
+app.use(agentTools, {
   env: {
     TOOLS_SIGNING_SECRET: app.env.TOOLS_SIGNING_SECRET
   }
@@ -91,41 +83,138 @@ app.use(tools, {
 export default app;
 ```
 
-Set the signing secret out-of-band (never hardcode it):
+The component reads these environment variables:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `TOOLS_SIGNING_SECRET` | yes | Secret used to HMAC-sign tool-call authorizations. |
+| `MODE` | no | `test` relaxes external calls for local development; defaults to `live`. |
+
+Set them with `npx convex env set`:
 
 ```bash
-npx convex env set TOOLS_SIGNING_SECRET "$(openssl rand -base64 32)"
+npx convex env set TOOLS_SIGNING_SECRET a-long-random-secret
 ```
 
-Construct the client from your app's generated `components`:
+Construct the client once:
 
 ```ts
+// convex/agentTools.ts
 import {AgentTools} from '@kinde-oss/kinde-convex-agent-tools';
 import {components} from './_generated/api.js';
 
 export const agentTools = new AgentTools(components.tools);
 ```
 
-### Composition seams
+Grant a tool to a subject, then decide (or decide and execute) a call:
 
-_Placeholder._ The client accepts two optional, app-supplied seams so the component stays independent of any specific auth or billing package:
+```ts
+await agentTools.policy.grant(ctx, subject, {tool: 'search'});
 
-- `verifyCaller` — authenticate a direct/cross-app caller of an app-mounted HTTP route.
-- `billingCheck` — decide whether billing permits a tool call.
+const decision = await agentTools.gate.checkTool(ctx, subject, {
+  tool: 'search',
+  args: {query: 'kinde'}
+});
+// decision: {decision: 'allow' | 'deny' | 'approve', reason?, approvalId?, correlationId}
+
+// Or decide and run the tool in one call, from an action:
+const {result, correlationId} = await agentTools.gate.runTool(
+  ctx,
+  subject,
+  {tool: 'search', args: {query: 'kinde'}},
+  async () => runSearch()
+);
+```
+
+`gate.runTool` must be called from an action: on a deny or approve it throws, and a throw inside a single mutation would roll back the decision's audit row, whereas in an action its internal `checkTool` commits independently first.
+
+### The HTTP route
+
+Mount the tool-decision route in your `convex/http.ts` (it runs in your app's context, where it can authenticate the caller):
+
+```ts
+import {httpRouter} from 'convex/server';
+import {registerRoutes} from '@kinde-oss/kinde-convex-agent-tools';
+import {components} from './_generated/api.js';
+
+const http = httpRouter();
+
+registerRoutes(http, components.tools, {
+  verifyCaller: async (request) => {
+    // Authenticate the caller and return the subject the decision acts for.
+    const subject = await authenticate(request);
+    return {subject};
+  }
+});
+
+export default http;
+```
+
+This mounts `POST /tools/check`. `verifyCaller` is required to mount the route — a request that fails it is rejected 401 before the decision pipeline runs. The route returns 200 for allow, 202 for approve, and 403 for deny; HTTP callers should read the response body's `decision`/`reason`, not only the status, since different deny reasons (`no_grant`, `budget_exceeded`) share 403. When configured with a `billingCheck`, an HTTP-originated call runs the identical budget step as an in-Convex `gate.checkTool`, so budget enforcement is uniform across entry points; without one, the budget step is skipped. See `RegisterRoutesOptions` for `pathPrefix` and `billingCheck`.
+
+### The `verifyCaller` seam
+
+`verifyCaller` is the app-supplied authentication seam for the HTTP route. It authenticates the incoming request and returns the subject; it throws (or returns a non-string subject) to reject.
+
+```ts
+type VerifyCaller = (request: Request) => Promise<VerifiedCaller>;
+
+interface VerifiedCaller {
+  subject: string; // the authenticated principal the decision acts for
+  org?: string; // optional tenant, forward-compat
+  agent?: string; // optional agent id, forward-compat
+}
+```
+
+The component never imports an auth package and never reads `ctx.auth`; any auth can supply the subject. In-Convex callers pass the subject directly to `gate.checkTool`/`gate.runTool`; the HTTP route derives it from `verifyCaller`.
+
+### The `billingCheck` seam
+
+`billingCheck` is the optional app-supplied budget seam. It is a `FunctionReference` to an app mutation that the spine invokes in the same transaction during the budget step, passing a redacted payload and receiving a decision:
+
+```ts
+// payload → result
+{subject: string; tool: string; argDigest: string; correlationId: string}
+{allow: boolean; reason?: string}
+```
+
+Wire it when constructing the client; a not-allowed result denies with reason `budget_exceeded`:
+
+```ts
+export const agentTools = new AgentTools(components.tools, {
+  billingCheck: internal.billing.check
+});
+```
+
+The payload carries only the redacted `argDigest`, never raw args. A `budget_exceeded` deny commits — the billing mutation's metering write and the deny audit row both persist; only a malformed billing return rolls the transaction back. The component imports no billing package.
+
+### Capabilities
+
+| Layer | What it does |
+| --- | --- |
+| Allowlist | Deny-by-default grants: a call with no matching grant is denied `no_grant` (`policy.grant`, `policy.revokeGrant`). |
+| Argument policy | Per-argument constraints — `required`, `min`, `max`, `denyValue`, `allowValues` — evaluated against the call's args, denying `argument_denied` on a violation (set via `policy.grant`). |
+| Approvals | High-risk tools return `approve` and require human resolution before running (`policy.setToolRisk`, `approvals.approve`, `approvals.deny`, `approvals.getStatus`). |
+| Revocation | A reactive kill-switch overlay, precedence global → org → agent → grant, that denies `revoked` without deleting the grant (`revocations.revoke`, `revocations.liftRevocation`, `grantRevocationKey`). |
+| Budget | An optional billing seam consulted in-transaction, denying `budget_exceeded` when not allowed (`billingCheck`). |
+| Decide & execute | `gate.checkTool` returns a machine-readable decision; `gate.runTool` decides then runs the tool and writes a completion audit row (call from an action). |
+| Audit | Exactly one audit row per decision, read through a paginated, filterable, newest-first query (`audit.query`). |
+
+### Composes with auth & billing
+
+`@kinde-oss/kinde-convex-agent-tools`, [`@kinde-oss/kinde-convex-agent-auth`](https://github.com/kinde-oss/kinde-convex-agent-auth), and [`@kinde-oss/kinde-convex-agent-billing`](https://github.com/kinde-oss/kinde-convex-agent-billing) are siblings in the Kinde AgentKit. They pair at the app level: auth resolves who the caller is through the `verifyCaller` seam, and billing meters the budget through the `billingCheck` seam. This component imports neither, so you can adopt it with or without them.
 
 ## Documentation
 
-For details on integrating this component into your project, head over to the [Kinde docs](https://kinde.com/docs/) and see the [developer tools](https://kinde.com/docs/developer-tools/) section.
+For details, see the [Kinde docs](https://kinde.com/docs/), the [developer tools](https://kinde.com/docs/developer-tools/) section, and the [Convex components docs](https://docs.convex.dev/components).
 
 ## Publishing
 
-The core team handles publishing.
-
-_Placeholder — the release/publish steps (GitHub Actions) are documented here as they are set up._
+The Kinde core team handles publishing.
 
 ## Contributing
 
-Please refer to Kinde's [contributing guidelines](https://github.com/kinde-oss/.github/blob/489e2ca9c3307c2b2e098a885e22f2239116394a/CONTRIBUTING.md).
+Please refer to Kinde’s [contributing guidelines](https://github.com/kinde-oss/.github/blob/489e2ca9c3307c2b2e098a885e22f2239116394a/CONTRIBUTING.md).
 
 ## License
 
