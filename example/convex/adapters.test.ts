@@ -181,14 +181,14 @@ describe('Mastra adapter transparency', () => {
     const allowTool = withMastra(
       {
         id: 'search',
-        execute: async ({context}: {context: {query: string}}) => {
+        execute: async (args: {query: string}) => {
           ranAllow = true;
-          return {hits: context.query};
+          return {hits: args.query};
         }
       },
       {tools, ctx, subject: SUBJECT}
     );
-    const out = await allowTool.execute({context: {query: 'hi'}});
+    const out = await allowTool.execute({query: 'hi'});
     expect(ranAllow).toBe(true);
     expect(out).toEqual({hits: 'hi'});
 
@@ -204,7 +204,7 @@ describe('Mastra adapter transparency', () => {
       },
       {tools, ctx, subject: SUBJECT}
     );
-    const denyData = await catchData(denyTool.execute({context: {}}));
+    const denyData = await catchData(denyTool.execute({}));
     expect(ranDeny).toBe(false);
     expect(denyData.code).toBe('tool_denied');
     expect(denyData.reason).toBe('no_grant');
@@ -221,7 +221,7 @@ describe('Mastra adapter transparency', () => {
       },
       {tools, ctx, subject: SUBJECT}
     );
-    const approveData = await catchData(approveTool.execute({context: {}}));
+    const approveData = await catchData(approveTool.execute({}));
     expect(ranApprove).toBe(false);
     expect(approveData.code).toBe('approval_pending');
     expect(typeof approveData.approvalId).toBe('string');
