@@ -204,6 +204,12 @@ The payload carries only the redacted `argDigest`, never raw args. A `budget_exc
 
 `@kinde-oss/kinde-convex-agent-tools`, [`@kinde-oss/kinde-convex-agent-auth`](https://github.com/kinde-oss/kinde-convex-agent-auth), and [`@kinde-oss/kinde-convex-agent-billing`](https://github.com/kinde-oss/kinde-convex-agent-billing) are siblings in the Kinde AgentKit. They pair at the app level: auth resolves who the caller is through the `verifyCaller` seam, and billing meters the budget through the `billingCheck` seam. This component imports neither, so you can adopt it with or without them.
 
+### Framework adapters
+
+The decision API is framework-neutral: `gate.checkTool` and `gate.runTool` take plain inputs (a `subject`, a `tool` name, and its `args`), never a framework's tool or request object. The component imports no agent framework, so it governs tool calls from any framework — or none.
+
+Bridging a specific framework is the job of a thin, optional adapter (~15 lines) that translates that framework's tool-call shape into a plain gate call and translates the decision back into what the framework expects (a throw, an error result, whatever its tool contract is). Adapters live in `example/adapters/`, never in the component. The repo ships reference adapters for MCP, Mastra, and LangChain as worked examples — they are illustrations of the pattern, not a fixed list of supported frameworks. To govern a framework not shown, write the same small translator against its tool-execute signature and point it at the same `gate.checkTool`.
+
 ## Documentation
 
 For details, see the [Kinde docs](https://kinde.com/docs/), the [developer tools](https://kinde.com/docs/developer-tools/) section, and the [Convex components docs](https://docs.convex.dev/components).

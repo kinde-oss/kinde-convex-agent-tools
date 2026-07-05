@@ -84,37 +84,26 @@ async function auditDecisions(t: ConvexTest) {
 
 // ---------------------------------------------------------------------------
 // MCP: deny/approve → structured MCP error result; allow → real dispatch.
-// The fake mirrors the REAL SDK shape (verified live against
-// @modelcontextprotocol/sdk 1.29): a schema'd tool's handler is called with
-// (args, extra) — args FLAT and already schema-validated, extra the SDK's
-// per-request context — and the wrapper must preserve extra on dispatch.
 // ---------------------------------------------------------------------------
 describe('MCP adapter transparency', () => {
-  test('allow → tool dispatched with (args, extra) preserved, same decision as the raw gate', async () => {
+  test('allow → tool dispatched, same decision as the raw gate', async () => {
     const t = initConvexTest();
     const {tools, ctx} = setup(t);
     await grant(t, 'search');
 
     let ran = false;
-    const governed = governMcpTool<{query: string}, {sessionId: string}>(
+    const governed = governMcpTool<{query: string}>(
       {tools, ctx, subject: SUBJECT, toolName: 'search'},
-      async (args, extra) => {
+      async (args) => {
         ran = true;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `hits:${args.query}:${extra?.sessionId ?? 'no-extra'}`
-            }
-          ]
-        };
+        return {content: [{type: 'text', text: `hits:${args.query}`}]};
       }
     );
 
-    const result = await governed({query: 'hi'}, {sessionId: 's1'});
+    const result = await governed({query: 'hi'});
     expect(ran).toBe(true);
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('hits:hi:s1');
+    expect(result.content[0].text).toBe('hits:hi');
 
     // Parity: the raw gate allows the same call.
     const raw = await tools.gate.checkTool(ctx, SUBJECT, {
@@ -250,18 +239,31 @@ describe('LangChain adapter transparency', () => {
     await grant(t, 'wire', {risk: 'high'});
 
     let ranAllow = false;
+    let seenRunManager: unknown;
+    let seenConfig: unknown;
     const allowTool = withLangChain(
       {
         name: 'search',
-        func: async (input: {query: string}) => {
+        func: async (
+          input: {query: string},
+          runManager?: unknown,
+          config?: unknown
+        ) => {
           ranAllow = true;
+          seenRunManager = runManager;
+          seenConfig = config;
           return `hits:${input.query}`;
         }
       },
       {tools, ctx, subject: SUBJECT}
     );
-    expect(await allowTool.func({query: 'hi'})).toBe('hits:hi');
+    const rm = {handleToolEnd: () => undefined};
+    const cfg = {runName: 'r1', tags: ['t']};
+    expect(await allowTool.func({query: 'hi'}, rm, cfg)).toBe('hits:hi');
     expect(ranAllow).toBe(true);
+    // The wrapper must forward LangChain's runManager and config, not drop them.
+    expect(seenRunManager).toBe(rm);
+    expect(seenConfig).toBe(cfg);
 
     let ranDeny = false;
     const denyTool = withLangChain(

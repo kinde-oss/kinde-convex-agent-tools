@@ -2,31 +2,33 @@ import type {ToolArgs} from '@kinde-oss/kinde-convex-agent-tools';
 import {gateOrThrow} from './governance.js';
 import type {Governance} from './governance.js';
 
-// --- Minimal LangChain structured-tool shape (typed locally; a genuine
+// --- Minimal LangChain tool shape (typed locally; a genuine
 // DynamicStructuredTool with a `func`/`name` satisfies it). No langchain import.
-// Tool args are the structured input, flat, modeled as ToolArgs. ---
-export interface LangChainTool<TArgs extends ToolArgs, TOutput> {
+// LangChain 1.x calls a tool's func with three positional args:
+// (input, runManager, config): input arrives flat and schema-validated,
+// runManager is the CallbackManagerForToolRun (undefined without callbacks,
+// positionally present), config is the merged RunnableConfig. ---
+export interface LangChainTool<TArgs extends ToolArgs, TRunManager, TConfig, TOutput> {
   name: string;
-  description?: string;
-  func: (input: TArgs) => Promise<TOutput>;
+  func: (input: TArgs, runManager?: TRunManager, config?: TConfig) => Promise<TOutput>;
 }
 
 /**
  * Wrap a LangChain tool so its `func` is gated. Before the real func runs, the
- * gate is consulted with (subject, tool.name, input); allow → run; deny/approve
- * → throw the typed error per LangChain's tool contract (`tool_denied` /
- * `approval_pending`, see {@link gateOrThrow}). Adds no policy — same decision as
- * the raw gate.
+ * call routes through the gate with the tool's flat input; on allow it runs with
+ * the original (input, runManager, config) preserved, so LangChain's callback
+ * manager and runnable config are never dropped; on deny/approve `gateOrThrow`
+ * throws the typed error, which propagates through LangChain with its data intact.
  */
-export function withKindeGovernance<TArgs extends ToolArgs, TOutput>(
-  tool: LangChainTool<TArgs, TOutput>,
+export function withKindeGovernance<TArgs extends ToolArgs, TRunManager, TConfig, TOutput>(
+  tool: LangChainTool<TArgs, TRunManager, TConfig, TOutput>,
   gov: Governance
-): LangChainTool<TArgs, TOutput> {
+): LangChainTool<TArgs, TRunManager, TConfig, TOutput> {
   return {
     ...tool,
-    func: async (input) => {
+    func: async (input, runManager, config) => {
       await gateOrThrow(gov, tool.name, input);
-      return await tool.func(input);
+      return await tool.func(input, runManager, config);
     }
   };
 }
