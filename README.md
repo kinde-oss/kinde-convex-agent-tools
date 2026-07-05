@@ -53,6 +53,8 @@ The `example/` directory is a runnable reference app that installs the component
 
 This component gives a Convex app a complete authorization story for autonomous and supervised agents: it decides every tool call through a single `checkTool` gate against a deny-by-default allowlist, enforces per-argument policy, routes high-risk tools to human approval, applies a reactive revocation kill switch, optionally consults a billing seam for budget, and writes exactly one audit row per decision — all in a single Convex transaction. Every decision takes plain inputs (a `subject`, a `tool`, and its `args`); the authentication of the caller and the billing budget are separate, app-composed concerns (see the seams below).
 
+Every decision acts for a `subject` — the identity the tool call is attributed to. The recommended way to supply it is Kinde: authenticate the caller with [`@kinde-oss/kinde-convex-agent-auth`](https://github.com/kinde-oss/kinde-convex-agent-auth) (or, for HTTP callers, a `verifyCaller` that validates a Kinde token) and pass the resolved subject in. The component itself is identity-agnostic and imports no Kinde SDK, so any auth can supply the subject and it runs standalone — but Kinde is the paved path, and pairs with the billing sibling for budget enforcement.
+
 ### Install and wire up
 
 Install the package:
@@ -202,7 +204,7 @@ The payload carries only the redacted `argDigest`, never raw args. A `budget_exc
 
 ### Composes with auth & billing
 
-`@kinde-oss/kinde-convex-agent-tools`, [`@kinde-oss/kinde-convex-agent-auth`](https://github.com/kinde-oss/kinde-convex-agent-auth), and [`@kinde-oss/kinde-convex-agent-billing`](https://github.com/kinde-oss/kinde-convex-agent-billing) are siblings in the Kinde AgentKit. They pair at the app level: auth resolves who the caller is through the `verifyCaller` seam, and billing meters the budget through the `billingCheck` seam. This component imports neither, so you can adopt it with or without them.
+This component is built to run as part of the Kinde AgentKit, and that pairing is the recommended way to deploy it: [`@kinde-oss/kinde-convex-agent-auth`](https://github.com/kinde-oss/kinde-convex-agent-auth) resolves who the caller is through the `verifyCaller` seam, and [`@kinde-oss/kinde-convex-agent-billing`](https://github.com/kinde-oss/kinde-convex-agent-billing) meters the budget through the `billingCheck` seam. Together the three siblings give an agent a complete identity → authorization → budget story at the app level. This component imports neither, so it runs with or without them — but the AgentKit stack is the paved road.
 
 ### Framework adapters
 
