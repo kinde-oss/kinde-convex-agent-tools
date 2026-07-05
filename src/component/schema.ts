@@ -97,12 +97,20 @@ export default defineSchema({
     resolvedBy: nullableString,
     resolvedAt: nullableNumber,
     resolvedReason: nullableString,
+    // A single-use ticket: `null` until the risk step consumes it on the next
+    // matching checkTool, then the timestamp it was consumed. An approved
+    // approval authorizes exactly ONE call for its `argDigest`.
+    consumedAt: nullableNumber,
     expiresAt: nullableNumber,
     createdAt: v.number()
   })
     .index('by_status', ['status'])
     .index('by_call', ['toolCallRef'])
-    .index('by_correlation', ['correlationId']),
+    .index('by_correlation', ['correlationId'])
+    // Lets the risk step find an approved, unconsumed ticket for this
+    // subject+tool efficiently; the small result set is matched by argDigest
+    // in memory.
+    .index('by_subject_tool_status', ['subject', 'tool', 'status']),
 
   /**
    * The audit trail: EXACTLY ONE row per decision (decision atomicity), carrying

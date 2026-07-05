@@ -75,8 +75,10 @@ type DecisionResult = Infer<typeof decisionResultValidator>;
  *      imported. Runs AFTER argument policy (a failed policy never consults
  *      billing) and BEFORE risk.
  *   e. Risk — the effective risk (the stricter of grant vs tool-policy risk) is
- *      resolved; if it requires approval (threshold: `high`), the call routes to
- *      `approve` (one approvals row created) instead of allow.
+ *      resolved; if it requires approval (threshold: `high`), a single-use
+ *      approved ticket for this exact subject+tool+argDigest is consumed and the
+ *      call ALLOWED (`approval_consumed`); otherwise the call routes to `approve`
+ *      (one pending approvals row created) instead of allow.
  *   f. Otherwise → allow.
  */
 export const checkTool = mutation({
@@ -145,8 +147,10 @@ export const checkTool = mutation({
       return {correlationId, toolCallId};
     };
 
-    const allow = async (): Promise<DecisionResult> => {
-      const {correlationId} = await record('allow', 'granted', null);
+    const allow = async (
+      reason: ReasonCode = 'granted'
+    ): Promise<DecisionResult> => {
+      const {correlationId} = await record('allow', reason, null);
       return {decision: 'allow', correlationId};
     };
 
@@ -178,6 +182,7 @@ export const checkTool = mutation({
         resolvedBy: null,
         resolvedAt: null,
         resolvedReason: null,
+        consumedAt: null,
         expiresAt:
           args.approvalTtlMs === undefined ? null : now + args.approvalTtlMs,
         createdAt: now
@@ -267,9 +272,34 @@ export const checkTool = mutation({
     }
 
     // e. Risk — resolve the effective (stricter) risk and route high-risk calls
-    // to human approval instead of allowing them outright.
+    // to human approval. A single-use ticket: before minting a NEW pending
+    // approval, look for one already `approved` and unconsumed for this exact
+    // subject+tool+argDigest. If found, consume it (mark `consumedAt`) and ALLOW
+    // this one call; a later call must be approved afresh. The argDigest match is
+    // the argument binding — an approval for argsA never authorizes argsB.
     const risk = effectiveRisk(grant.riskLevel, policy?.riskLevel ?? null);
     if (risk !== null && requiresApproval(risk)) {
+      const candidates = await ctx.db
+        .query('approvals')
+        .withIndex('by_subject_tool_status', (q) =>
+          q
+            .eq('subject', args.subject)
+            .eq('tool', args.tool)
+            .eq('status', 'approved')
+        )
+        .collect();
+      // The oldest approved, unconsumed ticket for this exact digest (bounded,
+      // few rows). Oldest-first is deterministic if several ever match.
+      const ticket = candidates
+        .filter((a) => a.consumedAt === null && a.argDigest === argDigest)
+        .sort(
+          (a, b) =>
+            a.createdAt - b.createdAt || a._creationTime - b._creationTime
+        )[0];
+      if (ticket !== undefined) {
+        await ctx.db.patch('approvals', ticket._id, {consumedAt: now});
+        return await allow('approval_consumed');
+      }
       return await approve(risk);
     }
 

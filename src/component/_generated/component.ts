@@ -43,6 +43,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         'internal',
         {approvalId: string},
         {
+          consumedAt: number | null;
           createdAt: number;
           expiresAt: number | null;
           resolvedAt: number | null;
@@ -89,6 +90,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               | 'approval_required'
               | 'approval_approved'
               | 'approval_denied'
+              | 'approval_consumed'
               | 'executed'
               | null;
             subject: string;

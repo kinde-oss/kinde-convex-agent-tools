@@ -74,6 +74,10 @@ export const reasonCodeValidator = v.union(
   v.literal('approval_required'),
   v.literal('approval_approved'),
   v.literal('approval_denied'),
+  // The ALLOW reason when the risk step consumes a single-use approved ticket
+  // (subject+tool+argDigest) instead of minting a new pending approval. An allow
+  // reason, NOT a DenyCode.
+  v.literal('approval_consumed'),
   // The COMPLETION event appended by runTool after an allowed tool actually
   // executes (audit-only; NOT a DenyCode and NOT a fresh decision).
   v.literal('executed')

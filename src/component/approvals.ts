@@ -110,6 +110,9 @@ const statusResultValidator = v.object({
   resolvedBy: nullableString,
   resolvedAt: nullableNumber,
   resolvedReason: nullableString,
+  // Set once the risk step consumes this single-use ticket; null while an
+  // approved ticket is still spendable.
+  consumedAt: nullableNumber,
   expiresAt: nullableNumber,
   createdAt: v.number()
 });
@@ -139,6 +142,7 @@ export const getStatus = query({
       resolvedBy: approval.resolvedBy,
       resolvedAt: approval.resolvedAt,
       resolvedReason: approval.resolvedReason,
+      consumedAt: approval.consumedAt,
       expiresAt: approval.expiresAt,
       createdAt: approval.createdAt
     };

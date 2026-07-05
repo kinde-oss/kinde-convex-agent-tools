@@ -313,3 +313,121 @@ describe('one-decision-row invariant (unchanged for allow/deny; one for approve)
     expect(audits[0].reason).toBe('approval_required');
   });
 });
+
+/** Grant a tool at high risk (so checkTool routes it through the risk gate). */
+async function grantHigh(t: ConvexTest, tool: string) {
+  await t.mutation(api.policy.grant, {subject: SUBJECT, tool, risk: 'high'});
+}
+
+describe('single-use approval consumption (the governed re-invoke path)', () => {
+  test('approve → SECOND checkTool (same args) consumes → allow; THIRD → approve again', async () => {
+    const t = initConvexTest();
+    await grantHigh(t, 'wire');
+    const args = {amount: 500, to: 'acct-1'};
+
+    // 1st: high-risk → approve (pending); the tool does not run.
+    const first = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args,
+      correlationId: 'c1'
+    });
+    expect(first.decision).toBe('approve');
+    const approvalId = approvalIdOf(first);
+
+    // Human approves.
+    await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
+
+    // 2nd (SAME args): the risk step consumes the ticket → ALLOW.
+    const second = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args,
+      correlationId: 'c2'
+    });
+    expect(second.decision).toBe('allow');
+    expect(second.correlationId).toBe('c2');
+
+    // Exactly one audit row for the 2nd call: allow / approval_consumed.
+    const c2 = await auditByCorrelation(t, 'c2');
+    expect(c2).toHaveLength(1);
+    expect(c2[0].decision).toBe('allow');
+    expect(c2[0].reason).toBe('approval_consumed');
+
+    // The ticket is now consumed (still 'approved' status, but spent).
+    const status = await t.query(api.approvals.getStatus, {approvalId});
+    expect(status?.status).toBe('approved');
+    expect(status?.consumedAt).not.toBeNull();
+
+    // 3rd (SAME args): single-use — a fresh pending ticket, not another allow.
+    const third = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args,
+      correlationId: 'c3'
+    });
+    expect(third.decision).toBe('approve');
+    expect(approvalIdOf(third)).not.toBe(approvalId);
+  });
+
+  test('argument binding: an approval for argsA does not authorize argsB', async () => {
+    const t = initConvexTest();
+    await grantHigh(t, 'wire');
+
+    const first = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500},
+      correlationId: 'a1'
+    });
+    const approvalId = approvalIdOf(first);
+    await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
+
+    // Different args → different digest → the ticket does not apply → approve.
+    const other = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 999},
+      correlationId: 'a2'
+    });
+    expect(other.decision).toBe('approve');
+    expect(approvalIdOf(other)).not.toBe(approvalId);
+
+    // The argsA ticket is untouched — no blank cheque, no arg-swap bypass.
+    const status = await t.query(api.approvals.getStatus, {approvalId});
+    expect(status?.consumedAt).toBeNull();
+  });
+
+  test('revocation precedence: a revoked subject with an approved ticket denies revoked; ticket not consumed', async () => {
+    const t = initConvexTest();
+    await grantHigh(t, 'wire');
+
+    const first = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500},
+      correlationId: 'r1'
+    });
+    const approvalId = approvalIdOf(first);
+    await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
+
+    // Revoke the subject (global) — this short-circuits BEFORE the risk step.
+    await t.mutation(api.revocations.revoke, {
+      targetType: 'global',
+      reason: 'incident'
+    });
+
+    const res = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500},
+      correlationId: 'r2'
+    });
+    expect(res.decision).toBe('deny');
+    expect(res.reason).toBe('revoked');
+
+    // The approved ticket was never consulted → still unconsumed.
+    const status = await t.query(api.approvals.getStatus, {approvalId});
+    expect(status?.consumedAt).toBeNull();
+  });
+});
