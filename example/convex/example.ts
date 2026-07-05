@@ -1,10 +1,15 @@
 import {action, mutation, query} from './_generated/server.js';
 import {api, components} from './_generated/api.js';
+import {createFunctionHandle} from 'convex/server';
 import {
   AgentTools,
-  grantRevocationKey
+  grantRevocationKey,
+  toolArgsValidator
 } from '@kinde-oss/kinde-convex-agent-tools';
-import type {ApprovalId} from '@kinde-oss/kinde-convex-agent-tools';
+import type {
+  ApprovalId,
+  CheckToolOptions
+} from '@kinde-oss/kinde-convex-agent-tools';
 import {ConvexError, v} from 'convex/values';
 
 /**
@@ -39,11 +44,9 @@ const riskLevel = v.union(
   v.literal('high')
 );
 
-// The flat tool-args shape the gate accepts (mirrors the component's validator).
-const toolArgs = v.record(
-  v.string(),
-  v.union(v.string(), v.number(), v.boolean(), v.null(), v.array(v.string()))
-);
+// The flat tool-args shape the gate accepts — the PACKAGE's own validator, so
+// the app's declared shape can never drift from what the component enforces.
+const toolArgs = toolArgsValidator;
 
 const decisionResult = v.object({
   decision: v.union(
@@ -222,28 +225,61 @@ export const approveApproval = mutation({
 });
 
 /**
- * Execute a tool the human APPROVED. Verifies the approval is granted, runs the
- * real tool, and appends the completion audit row tied to the approval's
- * correlation id (so the trail reads approval_required → approval_approved →
- * executed). This is the app's post-approval execution step.
+ * Execute a tool the human APPROVED. This does NOT trust a stale status read:
+ * after a quick typed pre-check that the named approval is `approved` and not
+ * yet consumed, the decision is re-made LIVE through `gate.checkTool`, which
+ * re-checks revocation, the allowlist, argument policy and budget NOW, and
+ * atomically CONSUMES the digest-bound single-use ticket in the same
+ * transaction as the run. That closes every replay/rebind hole:
+ * - replay: the ticket is consumed on first execution (consumedAt set) — a
+ *   second call typed-fails `not_approved`;
+ * - wrong run: the ticket is keyed to subject+tool+argDigest, so a different
+ *   subject, tool, or args finds no ticket and typed-fails;
+ * - revoked-since-approval: revocation short-circuits the spine → typed fail.
+ * On success it runs the real tool and appends the completion audit row tied to
+ * the approval's correlation id (trail: approval_required → approval_approved →
+ * approval_consumed → executed).
  */
 export const executeApproved = mutation({
   args: {
     subject: v.string(),
     tool: v.string(),
+    args: v.optional(toolArgs),
     approvalId: v.string(),
     correlationId: v.string()
   },
   returns: v.object({ran: v.boolean()}),
   handler: async (ctx, args) => {
+    // Typed pre-check for a clear error: the NAMED approval must be approved
+    // and still unconsumed (getStatus reflects consumedAt).
     const status = await governedTools.approvals.getStatus(
       ctx,
       args.approvalId as ApprovalId
     );
-    if (status === null || status.status !== 'approved') {
+    if (
+      status === null ||
+      status.status !== 'approved' ||
+      status.consumedAt !== null
+    ) {
       throw new ConvexError({
         code: 'not_approved',
-        message: 'The approval is not granted; the tool may not run.'
+        message:
+          'The approval is not granted (or already used); the tool may not run.'
+      });
+    }
+    // The REAL guard: re-run the decision spine live. Only an `allow` — which,
+    // for a high-risk tool, means the matching ticket was just consumed — lets
+    // the tool run; anything else (revoked, re-pended, denied) refuses.
+    const decision = await governedTools.gate.checkTool(ctx, args.subject, {
+      tool: args.tool,
+      ...(args.args === undefined ? {} : {args: args.args}),
+      correlationId: args.correlationId
+    });
+    if (decision.decision !== 'allow') {
+      throw new ConvexError({
+        code: 'not_approved',
+        message:
+          'The live decision did not allow this run; the tool may not run.'
       });
     }
     await ctx.db.insert('toolRuns', {
@@ -257,6 +293,37 @@ export const executeApproved = mutation({
       correlationId: args.correlationId
     });
     return {ran: true};
+  }
+});
+
+/**
+ * ADVERSARIAL TEST SUPPORT — attempts to smuggle a `billingCheck` handle
+ * through `gate.checkTool`'s public options. The client must IGNORE it: the
+ * billing seam comes ONLY from the AgentTools constructor options. This client
+ * is configured with the DENY-all seam, and the smuggled handle is the
+ * ALLOW-all fake — if the smuggle worked the call would allow; the correct
+ * outcome is a `budget_exceeded` deny from the CONFIGURED seam.
+ */
+export const checkToolWithSmuggledBilling = mutation({
+  args: {subject: v.string(), tool: v.string()},
+  returns: v.object({decision: v.string(), reason: v.optional(v.string())}),
+  handler: async (ctx, args) => {
+    const smuggled = await createFunctionHandle(api.fakeBilling.billingAllow);
+    // Not a fresh object literal at the call site, so excess-property checks
+    // don't apply — exactly how a JS caller could smuggle the field.
+    const sneaky: CheckToolOptions & {billingCheck?: string} = {
+      tool: args.tool,
+      billingCheck: smuggled
+    };
+    const result = await agentToolsWithBilling.gate.checkTool(
+      ctx,
+      args.subject,
+      sneaky
+    );
+    return {
+      decision: result.decision,
+      ...(result.reason === undefined ? {} : {reason: result.reason})
+    };
   }
 });
 

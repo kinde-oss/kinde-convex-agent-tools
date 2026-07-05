@@ -51,4 +51,11 @@ registerRoutes(http, components.tools, {
   verifyCaller
 });
 
+// A fourth mount whose billing seam THROWS an untyped error — exercises the
+// route's 500 path (an unexpected server-side failure is NOT a 400).
+registerRoutes(http, components.tools, {
+  pathPrefix: '/tools-billing-crash',
+  verifyCaller,
+  billingCheck: api.fakeBilling.billingCrash
+});
 export default http;

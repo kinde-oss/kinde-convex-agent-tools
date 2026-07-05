@@ -262,6 +262,52 @@ describe('HTTP seam — uniform budget enforcement across entry points', () => {
     expect(await auditRows(t)).toHaveLength(0);
   });
 
+  test('typed pipeline error → 400 with its code (contradictory noArgs config)', async () => {
+    const t = initConvexTest();
+    // A GRANT-level constraint plus a noArgs TOOL policy is the contradictory
+    // pairing the spine typed-fails at decision time (each write is valid on
+    // its own — the combination is only visible when the call combines them).
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'ping',
+      argumentConstraints: [{arg: 'x', kind: 'required'}]
+    });
+    await t.mutation(components.tools.policy.setToolPolicy, {
+      tool: 'ping',
+      noArgs: true
+    });
+    const res = await postTo(
+      t,
+      '/tools/check',
+      JSON.stringify({tool: 'ping'}),
+      authed
+    );
+    // A TYPED error stays a 400 carrying its machine-readable code — never 500.
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as DecisionBody).code).toBe(
+      'contradictory_constraint'
+    );
+  });
+
+  test('unexpected server-side failure → 500 internal_error (billing seam crashes)', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: 'user_alice',
+      tool: 'search'
+    });
+    const res = await postTo(
+      t,
+      '/tools-billing-crash/check',
+      JSON.stringify({tool: 'search'}),
+      authed
+    );
+    // An untyped throw inside the pipeline is a SERVER failure, not a client
+    // mistake: 500, not 400 — and the failed mutation left no audit row.
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as DecisionBody).code).toBe('internal_error');
+    expect(await auditRows(t)).toHaveLength(0);
+  });
+
   test('regression: a route with NO billingCheck skips the budget step', async () => {
     const t = initConvexTest();
     await t.mutation(components.tools.policy.grant, {

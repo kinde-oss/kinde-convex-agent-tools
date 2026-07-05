@@ -84,26 +84,37 @@ async function auditDecisions(t: ConvexTest) {
 
 // ---------------------------------------------------------------------------
 // MCP: deny/approve → structured MCP error result; allow → real dispatch.
+// The fake mirrors the REAL SDK shape (verified live against
+// @modelcontextprotocol/sdk 1.29): a schema'd tool's handler is called with
+// (args, extra) — args FLAT and already schema-validated, extra the SDK's
+// per-request context — and the wrapper must preserve extra on dispatch.
 // ---------------------------------------------------------------------------
 describe('MCP adapter transparency', () => {
-  test('allow → tool dispatched, same decision as the raw gate', async () => {
+  test('allow → tool dispatched with (args, extra) preserved, same decision as the raw gate', async () => {
     const t = initConvexTest();
     const {tools, ctx} = setup(t);
     await grant(t, 'search');
 
     let ran = false;
-    const governed = governMcpTool<{query: string}>(
+    const governed = governMcpTool<{query: string}, {sessionId: string}>(
       {tools, ctx, subject: SUBJECT, toolName: 'search'},
-      async (args) => {
+      async (args, extra) => {
         ran = true;
-        return {content: [{type: 'text', text: `hits:${args.query}`}]};
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `hits:${args.query}:${extra?.sessionId ?? 'no-extra'}`
+            }
+          ]
+        };
       }
     );
 
-    const result = await governed({query: 'hi'});
+    const result = await governed({query: 'hi'}, {sessionId: 's1'});
     expect(ran).toBe(true);
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe('hits:hi');
+    expect(result.content[0].text).toBe('hits:hi:s1');
 
     // Parity: the raw gate allows the same call.
     const raw = await tools.gate.checkTool(ctx, SUBJECT, {

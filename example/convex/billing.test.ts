@@ -120,4 +120,26 @@ describe('billing seam — client wiring (gate.checkTool threads the reference)'
     expect(res.reason).toBe('budget_exceeded');
     expect(await billingCalls(t)).toHaveLength(1);
   });
+
+  test('a smuggled billingCheck in public options CANNOT override the configured seam', async () => {
+    const t = initConvexTest();
+    await t.mutation(components.tools.policy.grant, {
+      subject: SUBJECT,
+      tool: 'search'
+    });
+    // checkToolWithSmuggledBilling smuggles a REAL handle to the ALLOW-all fake
+    // through gate.checkTool's options on a client configured with the DENY-all
+    // seam. The client must strip it: the configured seam still denies.
+    const res = await t.mutation(api.example.checkToolWithSmuggledBilling, {
+      subject: SUBJECT,
+      tool: 'search'
+    });
+    expect(res.decision).toBe('deny');
+    expect(res.reason).toBe('budget_exceeded');
+    // Exactly ONE billing invocation — the configured deny seam. The smuggled
+    // allow handle was never called (it would have recorded a second row and
+    // flipped the decision to allow).
+    const calls = await billingCalls(t);
+    expect(calls).toHaveLength(1);
+  });
 });

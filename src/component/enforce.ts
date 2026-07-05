@@ -163,7 +163,7 @@ export const checkTool = mutation({
     // pending approvals row, then back-link its id onto the toolCalls row — all
     // in this mutation. Still exactly one audit row + one toolCalls row + one
     // approvals row.
-    const approve = async (policy: RiskLevel): Promise<DecisionResult> => {
+    const approve = async (riskPolicy: RiskLevel): Promise<DecisionResult> => {
       const {correlationId, toolCallId} = await record(
         'approve',
         'approval_required',
@@ -178,7 +178,7 @@ export const checkTool = mutation({
         correlationId,
         status: 'pending',
         requestedBy: args.subject,
-        policy,
+        policy: riskPolicy,
         resolvedBy: null,
         resolvedAt: null,
         resolvedReason: null,
@@ -273,10 +273,11 @@ export const checkTool = mutation({
 
     // e. Risk — resolve the effective (stricter) risk and route high-risk calls
     // to human approval. A single-use ticket: before minting a NEW pending
-    // approval, look for one already `approved` and unconsumed for this exact
-    // subject+tool+argDigest. If found, consume it (mark `consumedAt`) and ALLOW
-    // this one call; a later call must be approved afresh. The argDigest match is
-    // the argument binding — an approval for argsA never authorizes argsB.
+    // approval, look for one already `approved`, UNEXPIRED and unconsumed for
+    // this exact subject+tool+argDigest. If found, consume it (mark
+    // `consumedAt`) and ALLOW this one call; a later call must be approved
+    // afresh. The argDigest match is the argument binding — an approval for
+    // argsA never authorizes argsB.
     const risk = effectiveRisk(grant.riskLevel, policy?.riskLevel ?? null);
     if (risk !== null && requiresApproval(risk)) {
       const candidates = await ctx.db
@@ -288,10 +289,18 @@ export const checkTool = mutation({
             .eq('status', 'approved')
         )
         .collect();
-      // The oldest approved, unconsumed ticket for this exact digest (bounded,
-      // few rows). Oldest-first is deterministic if several ever match.
+      // The oldest approved, unconsumed, UNEXPIRED ticket for this exact digest
+      // (bounded, few rows). An approved ticket past its `expiresAt` is dead —
+      // resolution-time expiry only guards PENDING approvals, so it must also
+      // be enforced here or a stale approval could authorize a call long after
+      // its TTL. Oldest-first is deterministic if several ever match.
       const ticket = candidates
-        .filter((a) => a.consumedAt === null && a.argDigest === argDigest)
+        .filter(
+          (a) =>
+            a.consumedAt === null &&
+            a.argDigest === argDigest &&
+            (a.expiresAt === null || a.expiresAt >= now)
+        )
         .sort(
           (a, b) =>
             a.createdAt - b.createdAt || a._creationTime - b._creationTime

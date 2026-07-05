@@ -68,7 +68,17 @@ function json(status: number, body: unknown): Response {
 /** Extract a stable `{code, message}` from a typed ConvexError, else generic. */
 function errorInfo(error: unknown): {code: string; message: string} {
   if (error instanceof ConvexError) {
-    const data: unknown = error.data;
+    let data: unknown = error.data;
+    // A component error can cross the function boundary with `.data`
+    // serialized as a JSON string — parse it so the typed {code, message} is
+    // still recovered instead of collapsing to internal_error.
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data) as unknown;
+      } catch {
+        // Not JSON — fall through to the generic error below.
+      }
+    }
     if (
       typeof data === 'object' &&
       data !== null &&
@@ -85,6 +95,16 @@ function errorInfo(error: unknown): {code: string; message: string} {
     code: 'internal_error',
     message: 'The request could not be processed.'
   };
+}
+
+/**
+ * HTTP status for a caught error: a typed component/boundary error is the
+ * caller's mistake (400); `internal_error` — the fallback for anything
+ * untyped/unexpected — is a server-side failure (500), so clients and
+ * observability tooling can tell the two apart.
+ */
+function statusForError(info: {code: string}): number {
+  return info.code === 'internal_error' ? 500 : 400;
 }
 
 /** A single tool-argument value must be a JSON primitive or a string array. */
@@ -201,7 +221,8 @@ export function registerRoutes(
           parseJson(rawText, 'tool_request_malformed', 'Expected a JSON body.')
         );
       } catch (error) {
-        return json(400, errorInfo(error));
+        const info = errorInfo(error);
+        return json(statusForError(info), info);
       }
 
       // 2. Authenticate the caller BEFORE the decision pipeline.
@@ -242,8 +263,10 @@ export function registerRoutes(
         });
         return json(statusForDecision(decision.decision), decision);
       } catch (error) {
-        // A typed input/config error (e.g. contradictory_constraint) is a 400.
-        return json(400, errorInfo(error));
+        // A typed input/config error (e.g. contradictory_constraint) is a 400;
+        // an untyped/unexpected failure surfaces as a 500 internal_error.
+        const info = errorInfo(error);
+        return json(statusForError(info), info);
       }
     })
   });

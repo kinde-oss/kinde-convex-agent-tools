@@ -50,6 +50,15 @@ export const billingDeny = mutation({
   }
 });
 
+/** Throws an UNTYPED error (simulates an unexpected internal billing failure). */
+export const billingCrash = mutation({
+  args: payload,
+  returns: billingCheckResultValidator,
+  handler: async () => {
+    throw new Error('simulated internal billing failure');
+  }
+});
+
 /** Returns a MALFORMED shape (no boolean `allow`) to exercise the hardening. */
 export const billingMalformed = mutation({
   args: payload,

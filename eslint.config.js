@@ -17,7 +17,13 @@ export default [
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
-        project: ['./tsconfig.json', './example/convex/tsconfig.json'],
+        // tsconfig.test.json covers the src test files (excluded from the
+        // composite root project) and example/adapters.
+        project: [
+          './tsconfig.json',
+          './tsconfig.test.json',
+          './example/convex/tsconfig.json'
+        ],
         tsconfigRootDir: import.meta.dirname
       }
     }
@@ -28,7 +34,10 @@ export default [
   {
     files: ['src/**/*.{ts,tsx}', 'example/convex/**/*.{ts,tsx}'],
     languageOptions: {
-      globals: globals.worker
+      // Worker globals for the Convex runtime, plus Node globals: `process`
+      // is not in globals.worker, and process.env is read (Convex populates
+      // it) in src/component/env.ts and example/convex/http.ts.
+      globals: {...globals.worker, ...globals.node}
     },
     plugins: {
       '@convex-dev': convexPlugin

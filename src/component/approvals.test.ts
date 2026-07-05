@@ -398,6 +398,44 @@ describe('single-use approval consumption (the governed re-invoke path)', () => 
     expect(status?.consumedAt).toBeNull();
   });
 
+  test('an EXPIRED approved ticket is NOT consumable: same-args checkTool mints afresh', async () => {
+    const t = initConvexTest();
+    await grantHigh(t, 'wire');
+
+    const first = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500},
+      correlationId: 'exp1',
+      approvalTtlMs: 60_000
+    });
+    const approvalId = approvalIdOf(first);
+    await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
+
+    // Push the APPROVED ticket past its expiry (test scaffolding to reach the
+    // state — resolution-time expiry only guards pending approvals).
+    await t.run(async (ctx) => {
+      await ctx.db.patch('approvals', approvalId, {
+        expiresAt: Date.now() - 1000
+      });
+    });
+
+    // Same subject+tool+args: the stale ticket must NOT authorize the call —
+    // a fresh pending approval is minted instead.
+    const second = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500},
+      correlationId: 'exp2'
+    });
+    expect(second.decision).toBe('approve');
+    expect(approvalIdOf(second)).not.toBe(approvalId);
+
+    // The expired ticket was never consumed.
+    const status = await t.query(api.approvals.getStatus, {approvalId});
+    expect(status?.consumedAt).toBeNull();
+  });
+
   test('revocation precedence: a revoked subject with an approved ticket denies revoked; ticket not consumed', async () => {
     const t = initConvexTest();
     await grantHigh(t, 'wire');

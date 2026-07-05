@@ -148,7 +148,10 @@ describe('end-to-end agent governance narrative', () => {
     });
     expect(status?.status).toBe('approved');
 
-    // The app now executes the approved tool (audit: approval → executed).
+    // The app now executes the approved tool. executeApproved re-runs the
+    // decision spine LIVE: it consumes the digest-bound single-use ticket
+    // (audit: approval_required → approval_approved → approval_consumed →
+    // executed) rather than trusting the earlier status read.
     const approvedRun = await t.mutation(api.example.executeApproved, {
       subject: AGENT,
       tool: 'wire',
@@ -156,6 +159,18 @@ describe('end-to-end agent governance narrative', () => {
       correlationId: 'c-d'
     });
     expect(approvedRun.ran).toBe(true);
+
+    // REPLAY BLOCKED: the ticket was consumed by the run above — replaying the
+    // same approval typed-fails and the tool does NOT run again.
+    const replay = await catchData(
+      t.mutation(api.example.executeApproved, {
+        subject: AGENT,
+        tool: 'wire',
+        approvalId,
+        correlationId: 'c-d'
+      })
+    );
+    expect(replay.code).toBe('not_approved');
 
     // ---- (e) REACTIVE REVOCATION mid-run ----------------------------------
     // 'search' allowed moments ago; revoke it (grant untouched) → next call
@@ -190,6 +205,7 @@ describe('end-to-end agent governance narrative', () => {
       ['allow', 'granted', 'c-e2'],
       ['deny', 'revoked', 'c-e'],
       ['allow', 'executed', 'c-d'],
+      ['allow', 'approval_consumed', 'c-d'],
       ['approve', 'approval_approved', 'c-d'],
       ['approve', 'approval_required', 'c-d'],
       ['allow', 'executed', 'c-c-ok'],
@@ -208,6 +224,7 @@ describe('end-to-end agent governance narrative', () => {
     });
     expect(cd.page.map((r) => r.reason)).toEqual([
       'executed',
+      'approval_consumed',
       'approval_approved',
       'approval_required'
     ]);
@@ -224,11 +241,14 @@ describe('end-to-end agent governance narrative', () => {
     // (after allowlist + argument policy, before/at risk), and NOT on the ones
     // short-circuited earlier (no_grant, argument_denied, revoked). The HTTP
     // route is now budget-gated too, so the HTTP allow (`c-a-http`) is present
-    // alongside the in-Convex allows — enforcement is uniform across entry points.
+    // alongside the in-Convex allows — enforcement is uniform across entry
+    // points. `c-d` appears TWICE: once for the original approval-routed check
+    // and once for executeApproved's live re-check that consumed the ticket.
     expect(await billingCorrelationIds(t)).toEqual([
       'c-a-http',
       'c-a-run',
       'c-c-ok',
+      'c-d',
       'c-d',
       'c-e2'
     ]);

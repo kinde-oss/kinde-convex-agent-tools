@@ -180,6 +180,31 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      setToolPolicy: FunctionReference<
+        'mutation',
+        'internal',
+        {
+          argumentConstraints?: Array<
+            | {arg: string; kind: 'required'}
+            | {arg: string; kind: 'min'; value: number}
+            | {arg: string; kind: 'max'; value: number}
+            | {
+                arg: string;
+                kind: 'denyValue';
+                value: string | number | boolean;
+              }
+            | {
+                arg: string;
+                kind: 'allowValues';
+                values: Array<string | number | boolean>;
+              }
+          > | null;
+          noArgs?: boolean;
+          tool: string;
+        },
+        string,
+        Name
+      >;
       setToolRisk: FunctionReference<
         'mutation',
         'internal',

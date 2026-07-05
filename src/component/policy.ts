@@ -18,6 +18,11 @@ const nullableConstraints = v.union(
  * time (fail fast) as well as at decision time, so a contradictory set (empty
  * `allowValues`, `min > max`, …) is rejected before it is ever stored.
  *
+ * MERGE semantics on update (no silent privilege changes): an OMITTED
+ * `argumentConstraints`/`risk` preserves the existing value — updating only the
+ * risk can never silently wipe the constraints, and vice versa. Clearing is
+ * always EXPLICIT: pass `null` for the field you mean to clear.
+ *
  * `agent` is null in P2 (agent-scoped grants arrive with caller identity in P7).
  */
 export const grant = mutation({
@@ -29,18 +34,25 @@ export const grant = mutation({
   },
   returns: v.id('toolGrants'),
   handler: async (ctx, args) => {
-    const argumentConstraints = args.argumentConstraints ?? null;
-    const riskLevel = args.risk ?? null;
-    if (argumentConstraints !== null) {
-      assertConstraintsWellFormed(argumentConstraints);
-    }
-
     const existing = await ctx.db
       .query('toolGrants')
       .withIndex('by_subject', (q) =>
         q.eq('subject', args.subject).eq('tool', args.tool)
       )
       .unique();
+
+    // undefined = "leave as-is" (falls back to the existing value); null =
+    // "explicitly clear". This is what stops a risk-only update from wiping
+    // constraints (or a constraints-only update from wiping the risk gate).
+    const argumentConstraints =
+      args.argumentConstraints !== undefined
+        ? args.argumentConstraints
+        : (existing?.argumentConstraints ?? null);
+    const riskLevel =
+      args.risk !== undefined ? args.risk : (existing?.riskLevel ?? null);
+    if (argumentConstraints !== null) {
+      assertConstraintsWellFormed(argumentConstraints);
+    }
 
     let grantId: Id<'toolGrants'>;
     if (existing !== null) {
@@ -122,6 +134,69 @@ export const setToolRisk = mutation({
       riskLevel: args.level,
       noArgs: false,
       argumentConstraints: null
+    });
+  }
+});
+
+/**
+ * Upsert the per-tool ARGUMENT policy: `noArgs` (the tool takes no arguments)
+ * and/or global `argumentConstraints` that apply to the tool regardless of
+ * grant. The evaluator already consumes both — this is their admin writer,
+ * completing the `toolPolicies` surface alongside `setToolRisk`.
+ *
+ * MERGE semantics, like `grant`: an OMITTED field preserves the existing value
+ * (and `riskLevel` is never touched here); clearing constraints is explicit via
+ * `null`. Constraints are validated exactly as at grant time (empty
+ * `allowValues`, `min > max`, … → typed `invalid_constraint`), and the
+ * contradictory pairing the spine rejects at decision time — `noArgs` with a
+ * non-empty constraint set — is rejected HERE at write time too, against the
+ * MERGED result, so the contradiction can never be stored.
+ */
+export const setToolPolicy = mutation({
+  args: {
+    tool: v.string(),
+    noArgs: v.optional(v.boolean()),
+    argumentConstraints: v.optional(nullableConstraints)
+  },
+  returns: v.id('toolPolicies'),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('toolPolicies')
+      .withIndex('by_tool', (q) => q.eq('tool', args.tool))
+      .unique();
+
+    const noArgs =
+      args.noArgs !== undefined ? args.noArgs : (existing?.noArgs ?? false);
+    const argumentConstraints =
+      args.argumentConstraints !== undefined
+        ? args.argumentConstraints
+        : (existing?.argumentConstraints ?? null);
+    if (argumentConstraints !== null) {
+      assertConstraintsWellFormed(argumentConstraints);
+    }
+    if (
+      noArgs &&
+      argumentConstraints !== null &&
+      argumentConstraints.length > 0
+    ) {
+      fail(
+        'contradictory_constraint',
+        `Tool '${args.tool}' cannot be marked no-args and carry argument constraints.`
+      );
+    }
+
+    if (existing !== null) {
+      await ctx.db.patch('toolPolicies', existing._id, {
+        noArgs,
+        argumentConstraints
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert('toolPolicies', {
+      tool: args.tool,
+      riskLevel: null,
+      noArgs,
+      argumentConstraints
     });
   }
 });

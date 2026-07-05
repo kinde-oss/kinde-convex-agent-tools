@@ -126,6 +126,78 @@ describe('gate.runTool — deny', () => {
   });
 });
 
+describe('gate.runTool — approval ticket consumption (single-use)', () => {
+  test('approve → human approves → SAME-args runTool executes fn; a THIRD call pends again', async () => {
+    const t = initConvexTest();
+    const tools = new AgentTools(component);
+    const ctx = makeRunCtx(t);
+    await tools.policy.grant(ctx, 'user_alice', {tool: 'wire', risk: 'high'});
+    const opts = {tool: 'wire', args: {amount: 900, to: 'acct-1'}};
+
+    // 1st: approval_pending; fn does not run.
+    const first = await catchData(
+      tools.gate.runTool(ctx, 'user_alice', opts, async () => 'sent')
+    );
+    expect(first.code).toBe('approval_pending');
+    const approvalId = first.approvalId as ApprovalId;
+
+    // Human approves the ticket.
+    await tools.approvals.approve(ctx, approvalId, 'admin_bob');
+
+    // 2nd (SAME args): the ticket is consumed and fn EXECUTES.
+    let ran = 0;
+    const out = await tools.gate.runTool(ctx, 'user_alice', opts, async () => {
+      ran += 1;
+      return 'sent';
+    });
+    expect(ran).toBe(1);
+    expect(out.result).toBe('sent');
+    // The decision row records the consumption; the completion row follows.
+    const rows = await trail(ctx, tools, out.correlationId);
+    expect(rows.map((r) => r.reason)).toEqual([
+      'executed',
+      'approval_consumed'
+    ]);
+
+    // 3rd (SAME args): single-use — no auto-allow; a FRESH approval pends.
+    const third = await catchData(
+      tools.gate.runTool(ctx, 'user_alice', opts, async () => {
+        ran += 1;
+        return 'sent';
+      })
+    );
+    expect(third.code).toBe('approval_pending');
+    expect(third.approvalId).not.toBe(approvalId);
+    expect(ran).toBe(1);
+  });
+});
+
+describe('gate.runTool — fn failure after allow', () => {
+  test('fn throws → the error propagates unchanged and NO completion row is written', async () => {
+    const t = initConvexTest();
+    const tools = new AgentTools(component);
+    const ctx = makeRunCtx(t);
+    await tools.policy.grant(ctx, 'user_alice', {tool: 'search'});
+
+    await expect(
+      tools.gate.runTool(
+        ctx,
+        'user_alice',
+        {tool: 'search', correlationId: 'c-fail'},
+        async () => {
+          throw new Error('tool exploded');
+        }
+      )
+    ).rejects.toThrow('tool exploded');
+
+    // The trail shows the allow decision WITHOUT an 'executed' row — the
+    // documented "granted but not completed" shape.
+    const rows = await trail(ctx, tools, 'c-fail');
+    expect(rows.map((r) => r.reason)).toEqual(['granted']);
+    expect(rows[0].decision).toBe('allow');
+  });
+});
+
 describe('gate.runTool — approve', () => {
   test('high-risk → throws approval_pending with approvalId, fn does NOT run, approval is pending', async () => {
     const t = initConvexTest();

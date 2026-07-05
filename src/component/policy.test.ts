@@ -226,6 +226,88 @@ describe('policy admin + reactivity (public component API)', () => {
     expect(rows[0].riskLevel).toBe('low');
   });
 
+  test('MERGE semantics: re-grant with ONLY risk preserves prior constraints', async () => {
+    const t = initConvexTest();
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      argumentConstraints: [{arg: 'amount', kind: 'max', value: 100}],
+      risk: 'low'
+    });
+    // Update ONLY the risk — the constraints must survive (no silent
+    // privilege change from a partial update).
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      risk: 'medium'
+    });
+
+    const rows = await grantRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].riskLevel).toBe('medium');
+    expect(rows[0].argumentConstraints).toEqual([
+      {arg: 'amount', kind: 'max', value: 100}
+    ]);
+
+    // And they still bind: over-cap is still denied.
+    const overCap = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 500}
+    });
+    expect(overCap.decision).toBe('deny');
+    expect(overCap.reason).toBe('argument_denied');
+  });
+
+  test('MERGE semantics: re-grant with ONLY constraints preserves prior riskLevel', async () => {
+    const t = initConvexTest();
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'wire',
+      risk: 'high'
+    });
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'wire',
+      argumentConstraints: [{arg: 'amount', kind: 'max', value: 1000}]
+    });
+
+    const rows = await grantRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].riskLevel).toBe('high');
+
+    // The risk gate still applies: an in-policy call still routes to approval,
+    // NOT a silent allow (the human-approval requirement was not wiped).
+    const res = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 500}
+    });
+    expect(res.decision).toBe('approve');
+  });
+
+  test('clearing stays EXPLICIT: argumentConstraints: null removes constraints', async () => {
+    const t = initConvexTest();
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      argumentConstraints: [{arg: 'amount', kind: 'max', value: 100}]
+    });
+    await t.mutation(api.policy.grant, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      argumentConstraints: null
+    });
+    const rows = await grantRows(t);
+    expect(rows[0].argumentConstraints).toBeNull();
+    const res = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 500}
+    });
+    expect(res.decision).toBe('allow');
+  });
+
   test('one-audit-row invariant holds through the public path (allow & deny)', async () => {
     const t = initConvexTest();
 
@@ -241,5 +323,101 @@ describe('policy admin + reactivity (public component API)', () => {
       tool: 'search'
     });
     expect(await auditRows(t2)).toHaveLength(1);
+  });
+});
+
+describe('setToolPolicy — per-tool argument policy admin', () => {
+  async function policyRows(t: ConvexTest) {
+    return await t.run(async (ctx) => ctx.db.query('toolPolicies').collect());
+  }
+
+  test('global constraints bind every grant of the tool', async () => {
+    const t = initConvexTest();
+    // Grant WITHOUT constraints; the TOOL-level policy carries them.
+    await t.mutation(api.policy.grant, {subject: SUBJECT, tool: 'transfer'});
+    await t.mutation(api.policy.setToolPolicy, {
+      tool: 'transfer',
+      argumentConstraints: [{arg: 'amount', kind: 'max', value: 100}]
+    });
+
+    const overCap = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 500}
+    });
+    expect(overCap.decision).toBe('deny');
+    expect(overCap.reason).toBe('argument_denied');
+
+    const withinCap = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 50}
+    });
+    expect(withinCap.decision).toBe('allow');
+  });
+
+  test('constraints are validated like grant-time: empty allowValues → typed fail, nothing stored', async () => {
+    const t = initConvexTest();
+    await expectFail(
+      t.mutation(api.policy.setToolPolicy, {
+        tool: 'files',
+        argumentConstraints: [{arg: 'action', kind: 'allowValues', values: []}]
+      }),
+      'invalid_constraint'
+    );
+    await expectFail(
+      t.mutation(api.policy.setToolPolicy, {
+        tool: 'transfer',
+        argumentConstraints: [
+          {arg: 'amount', kind: 'min', value: 100},
+          {arg: 'amount', kind: 'max', value: 10}
+        ]
+      }),
+      'invalid_constraint'
+    );
+    expect(await policyRows(t)).toHaveLength(0);
+  });
+
+  test('contradiction rejected at WRITE time: noArgs + constraints (same call and via merge)', async () => {
+    const t = initConvexTest();
+    // Same call.
+    await expectFail(
+      t.mutation(api.policy.setToolPolicy, {
+        tool: 'ping',
+        noArgs: true,
+        argumentConstraints: [{arg: 'x', kind: 'required'}]
+      }),
+      'contradictory_constraint'
+    );
+    // Via merge: constraints already stored, then noArgs: true alone.
+    await t.mutation(api.policy.setToolPolicy, {
+      tool: 'ping',
+      argumentConstraints: [{arg: 'x', kind: 'required'}]
+    });
+    await expectFail(
+      t.mutation(api.policy.setToolPolicy, {tool: 'ping', noArgs: true}),
+      'contradictory_constraint'
+    );
+  });
+
+  test('merge semantics across setToolPolicy and setToolRisk (neither wipes the other)', async () => {
+    const t = initConvexTest();
+    await t.mutation(api.policy.setToolPolicy, {
+      tool: 'transfer',
+      argumentConstraints: [{arg: 'amount', kind: 'max', value: 100}]
+    });
+    await t.mutation(api.policy.setToolRisk, {tool: 'transfer', level: 'high'});
+    await t.mutation(api.policy.setToolPolicy, {
+      tool: 'transfer',
+      noArgs: false
+    });
+
+    const rows = await policyRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].riskLevel).toBe('high');
+    expect(rows[0].noArgs).toBe(false);
+    expect(rows[0].argumentConstraints).toEqual([
+      {arg: 'amount', kind: 'max', value: 100}
+    ]);
   });
 });

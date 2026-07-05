@@ -26,9 +26,11 @@ export type {
   VerifyCaller,
   VerifiedCaller
 } from './http.js';
-// Runtime validators for the billing seam, re-exported so an app can build its
-// billingCheck mutation with the exact shared arg/return shapes.
+// Runtime validators, re-exported so an app can build its billingCheck
+// mutation with the exact shared arg/return shapes, and declare tool-args
+// fields with the exact shape the gate accepts (no drifting local copies).
 export {
+  argsValidator as toolArgsValidator,
   billingCheckPayloadValidator,
   billingCheckResultValidator
 } from '../component/validators.js';
@@ -49,6 +51,7 @@ type CheckToolArgs = FunctionArgs<ComponentApi['enforce']['checkTool']>;
 type GrantArgs = FunctionArgs<ComponentApi['policy']['grant']>;
 type RevokeGrantArgs = FunctionArgs<ComponentApi['policy']['revokeGrant']>;
 type SetToolRiskArgs = FunctionArgs<ComponentApi['policy']['setToolRisk']>;
+type SetToolPolicyArgs = FunctionArgs<ComponentApi['policy']['setToolPolicy']>;
 type ApproveArgs = FunctionArgs<ComponentApi['approvals']['approve']>;
 type DenyApprovalArgs = FunctionArgs<ComponentApi['approvals']['deny']>;
 type GetStatusArgs = FunctionArgs<ComponentApi['approvals']['getStatus']>;
@@ -73,6 +76,9 @@ type RevokeGrantResult = FunctionReturnType<
 >;
 type SetToolRiskResult = FunctionReturnType<
   ComponentApi['policy']['setToolRisk']
+>;
+type SetToolPolicyResult = FunctionReturnType<
+  ComponentApi['policy']['setToolPolicy']
 >;
 type ApproveResult = FunctionReturnType<ComponentApi['approvals']['approve']>;
 type DenyApprovalResult = FunctionReturnType<ComponentApi['approvals']['deny']>;
@@ -112,12 +118,20 @@ export function grantRevocationKey(subject: string, tool: string): string {
   return JSON.stringify([subject, tool]);
 }
 
-/** Everything about a `checkTool` call except the subject (which is positional). */
-export type CheckToolOptions = Omit<CheckToolArgs, 'subject'>;
+/**
+ * Everything about a `checkTool` call except the subject (which is positional)
+ * and the internal `billingCheck` handle: the billing seam is configured ONLY
+ * via {@link AgentToolsOptions.billingCheck} at construction, never per call,
+ * so a caller can never smuggle an arbitrary serialized FunctionHandle through
+ * the public options (see also the runtime strip in `runCheckTool`).
+ */
+export type CheckToolOptions = Omit<CheckToolArgs, 'subject' | 'billingCheck'>;
 /** Everything about a grant except the subject (which is positional). */
 export type GrantOptions = Omit<GrantArgs, 'subject'>;
 /** Everything about a revoke except the subject (which is positional). */
 export type RevokeGrantOptions = Omit<RevokeGrantArgs, 'subject'>;
+/** Everything about a per-tool argument policy except the tool (positional). */
+export type SetToolPolicyOptions = Omit<SetToolPolicyArgs, 'tool'>;
 
 /** The decision surface of the client. */
 export interface GateApi {
@@ -144,6 +158,14 @@ export interface GateApi {
    * `fn` is the APP's tool implementation and executes in the APP's context
    * (this is client-side orchestration) — it is never passed into a component
    * mutation. The pipeline is evaluated exactly once (a single `checkTool`).
+   *
+   * AUDIT CALLOUT — if `fn` THROWS after the allow decision, the error
+   * propagates unchanged and NO completion row is written: the trail shows the
+   * allow decision row without a matching `executed` row ("granted but not
+   * completed"). This is inherent to the action model (the decision committed
+   * in its own mutation; the app-side `fn` cannot be atomically rolled into
+   * it). A caller that needs failure telemetry should catch the throw and
+   * record its own failure event keyed by the decision's `correlationId`.
    */
   runTool<TResult>(
     ctx: RunMutationCtx,
@@ -182,6 +204,16 @@ export interface PolicyApi {
     tool: string,
     level: SetToolRiskArgs['level']
   ): Promise<SetToolRiskResult>;
+  /**
+   * Upsert the per-tool ARGUMENT policy: `noArgs` and/or global
+   * `argumentConstraints` applying to the tool regardless of grant. Merge
+   * semantics (omitted fields preserved); constraints validated like `grant`'s.
+   */
+  setToolPolicy(
+    ctx: RunMutationCtx,
+    tool: string,
+    opts: SetToolPolicyOptions
+  ): Promise<SetToolPolicyResult>;
 }
 
 /** The human-in-the-loop approval surface of the client. */
@@ -314,9 +346,15 @@ export class AgentTools {
       opts: CheckToolOptions
     ): Promise<GateResult> => {
       const billingCheck = await billingCheckHandle(options.billingCheck);
+      // Defense in depth: `CheckToolOptions` omits `billingCheck` at the type
+      // level, but a JS caller could still pass one — strip it here so the
+      // budget seam can ONLY come from the constructor's AgentToolsOptions,
+      // never be injected (or overridden) per call.
+      const {billingCheck: _smuggled, ...sanitized} =
+        opts as CheckToolOptions & {billingCheck?: unknown};
       return ctx.runMutation(component.enforce.checkTool, {
         subject,
-        ...opts,
+        ...sanitized,
         ...(billingCheck === undefined ? {} : {billingCheck})
       });
     };
@@ -359,7 +397,9 @@ export class AgentTools {
       revokeGrant: (ctx, subject, opts) =>
         ctx.runMutation(component.policy.revokeGrant, {subject, ...opts}),
       setToolRisk: (ctx, tool, level) =>
-        ctx.runMutation(component.policy.setToolRisk, {tool, level})
+        ctx.runMutation(component.policy.setToolRisk, {tool, level}),
+      setToolPolicy: (ctx, tool, opts) =>
+        ctx.runMutation(component.policy.setToolPolicy, {tool, ...opts})
     };
     this.approvals = {
       approve: (ctx, approvalId, approver) =>
