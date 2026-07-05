@@ -8,11 +8,15 @@
  * @module
  */
 
-import type * as example from '../example.js';
-import type * as fakeBilling from '../fakeBilling.js';
-import type * as http from '../http.js';
+import type * as example from "../example.js";
+import type * as fakeBilling from "../fakeBilling.js";
+import type * as http from "../http.js";
 
-import type {ApiFromModules, FilterApi, FunctionReference} from 'convex/server';
+import type {
+  ApiFromModules,
+  FilterApi,
+  FunctionReference,
+} from "convex/server";
 
 declare const fullApi: ApiFromModules<{
   example: typeof example;
@@ -30,7 +34,7 @@ declare const fullApi: ApiFromModules<{
  */
 export declare const api: FilterApi<
   typeof fullApi,
-  FunctionReference<any, 'public'>
+  FunctionReference<any, "public">
 >;
 
 /**
@@ -43,9 +47,9 @@ export declare const api: FilterApi<
  */
 export declare const internal: FilterApi<
   typeof fullApi,
-  FunctionReference<any, 'internal'>
+  FunctionReference<any, "internal">
 >;
 
 export declare const components: {
-  tools: import('@kinde-oss/kinde-convex-agent-tools/_generated/component.js').ComponentApi<'tools'>;
+  tools: import("@kinde-oss/kinde-convex-agent-tools/_generated/component.js").ComponentApi<"tools">;
 };
