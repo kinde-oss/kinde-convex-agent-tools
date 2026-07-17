@@ -88,9 +88,25 @@ export const checkToolWithBilling = mutation({
 });
 
 // --- Narrative drivers: each threads the app's subject into the PUBLIC client
-// surface. The app adds no policy; the component decides everything. ---
+// surface. The app adds no policy; the component decides everything.
+//
+// EXAMPLE ONLY — INSECURE AS WRITTEN. Every function below takes `subject` (and,
+// for approvals, `approver`) as a plain client-supplied argument, so any caller
+// can name any identity. That keeps each function's intent readable, and it is
+// exactly what a real app must NOT do. See the README's "Security model" and
+// "Composing with agent-auth" sections for the wrapping each one needs. ---
 
-/** Grant a tool to a subject (optionally at a risk level). */
+/**
+ * Grant a tool to a subject (optionally at a risk level).
+ *
+ * EXAMPLE ONLY — INSECURE AS WRITTEN. This is an ADMIN function that WIDENS
+ * authority: it writes the allowlist row that turns a `no_grant` deny into an
+ * allow. Exposed as a public mutation taking a client-supplied `subject`, it
+ * lets any caller grant any tool to anyone — including themselves. In
+ * production this MUST be wrapped behind an authenticated ADMIN session, and
+ * `subject` must name the principal the admin is administering, never come from
+ * the caller's own request. See the README's "Security model" (point 2).
+ */
 export const grantTool = mutation({
   args: {subject: v.string(), tool: v.string(), risk: v.optional(riskLevel)},
   returns: v.null(),
@@ -103,7 +119,16 @@ export const grantTool = mutation({
   }
 });
 
-/** Grant a tool with a numeric `max` constraint on one argument. */
+/**
+ * Grant a tool with a numeric `max` constraint on one argument.
+ *
+ * EXAMPLE ONLY — INSECURE AS WRITTEN. Same admin/widening surface as
+ * `grantTool`, and sharper: the caller also chooses the constraint. A caller who
+ * can call this picks their own spending cap (`max: 1_000_000`), which is the
+ * limit meant to bind them. Wrap behind an authenticated ADMIN session; never
+ * let the constrained party supply the constraint. See the README's "Security
+ * model" (point 2).
+ */
 export const grantToolWithMaxArg = mutation({
   args: {
     subject: v.string(),
@@ -184,7 +209,19 @@ export const runGovernedTool = action({
   }
 });
 
-/** Just the decision (no execution), via `gate.checkTool`. */
+/**
+ * Just the decision (no execution), via `gate.checkTool`.
+ *
+ * EXAMPLE ONLY — INSECURE AS WRITTEN. This is the AGENT-FACING shape, and it
+ * commits the exact mistake the README calls out: it takes `subject` from client
+ * input. The grant lookup is identity-agnostic, so THE SUBJECT IS THE TRUST
+ * DECISION — a caller passing `subject: 'user_admin'` gets decided against the
+ * admin's allowlist, and the audit row will faithfully record the admin as the
+ * actor. In production, derive the subject from a verified token
+ * (`agentAuth.verifyCaller(ctx, token)` → `caller.subject`) and pass THAT in;
+ * the endpoint should take a token and a tool, never a subject. See the README's
+ * "Security model" (point 3) and "Composing with agent-auth".
+ */
 export const checkGovernedTool = mutation({
   args: {
     subject: v.string(),
@@ -210,7 +247,20 @@ export const checkGovernedTool = mutation({
   }
 });
 
-/** Resolve a pending approval (a human reviewer authenticated by the app). */
+/**
+ * Resolve a pending approval (a human reviewer authenticated by the app).
+ *
+ * EXAMPLE ONLY — INSECURE AS WRITTEN. `approver` is a TRUSTED STRING the
+ * component stores verbatim as the record of who authorized a high-risk call,
+ * and here it arrives straight from client input — so any caller can approve any
+ * pending call and sign it with any name they like, including an agent approving
+ * its own wire transfer as "admin_bob". The human-in-the-loop gate is only as
+ * real as this identity. In production, extract `approver` from a VERIFIED HUMAN
+ * SESSION (e.g. a Kinde user access token, as agent-auth's `authorizeApprover`
+ * hook does — see `http.ts` in this example) and confirm that subject is
+ * actually an authorized approver. Never read it from a body or header. See the
+ * README's "Security model" (point 4).
+ */
 export const approveApproval = mutation({
   args: {approvalId: v.string(), approver: v.string()},
   returns: v.null(),

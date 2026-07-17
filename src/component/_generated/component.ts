@@ -8,7 +8,7 @@
  * @module
  */
 
-import type {FunctionReference} from 'convex/server';
+import type { FunctionReference } from "convex/server";
 
 /**
  * A utility for referencing a Convex component's exposed API.
@@ -25,23 +25,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     approvals: {
       approve: FunctionReference<
-        'mutation',
-        'internal',
-        {approvalId: string; approver: string},
+        "mutation",
+        "internal",
+        { approvalId: string; approver: string },
         null,
         Name
       >;
       deny: FunctionReference<
-        'mutation',
-        'internal',
-        {approvalId: string; approver: string; reason: string},
+        "mutation",
+        "internal",
+        { approvalId: string; approver: string; reason: string },
         null,
         Name
       >;
       getStatus: FunctionReference<
-        'query',
-        'internal',
-        {approvalId: string},
+        "query",
+        "internal",
+        { approvalId: string },
         {
           consumedAt: number | null;
           createdAt: number;
@@ -49,18 +49,18 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           resolvedAt: number | null;
           resolvedBy: string | null;
           resolvedReason: string | null;
-          status: 'pending' | 'approved' | 'denied' | 'expired';
+          status: "pending" | "approved" | "denied" | "expired";
         } | null,
         Name
       >;
     };
     audit: {
       query: FunctionReference<
-        'query',
-        'internal',
+        "query",
+        "internal",
         {
           correlationId?: string;
-          decision?: 'allow' | 'deny' | 'approve';
+          decision?: "allow" | "deny" | "approve";
           paginationOpts: {
             cursor: string | null;
             endCursor?: string | null;
@@ -80,31 +80,31 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             agent: string | null;
             argDigest: string;
             correlationId: string;
-            decision: 'allow' | 'deny' | 'approve';
+            decision: "allow" | "deny" | "approve";
             reason:
-              | 'granted'
-              | 'no_grant'
-              | 'argument_denied'
-              | 'revoked'
-              | 'budget_exceeded'
-              | 'approval_required'
-              | 'approval_approved'
-              | 'approval_denied'
-              | 'approval_consumed'
-              | 'executed'
+              | "granted"
+              | "no_grant"
+              | "argument_denied"
+              | "revoked"
+              | "budget_exceeded"
+              | "approval_required"
+              | "approval_approved"
+              | "approval_denied"
+              | "approval_consumed"
+              | "executed"
               | null;
             subject: string;
             tool: string;
             ts: number;
           }>;
-          pageStatus?: 'SplitRecommended' | 'SplitRequired' | null;
+          pageStatus?: "SplitRecommended" | "SplitRequired" | null;
           splitCursor?: string | null;
         },
         Name
       >;
       recordCompletion: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           args?: Record<
             string,
@@ -120,8 +120,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
     };
     enforce: {
       checkTool: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           approvalTtlMs?: number;
           args?: Record<
@@ -136,37 +136,37 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           approvalId?: string;
           correlationId: string;
-          decision: 'allow' | 'deny' | 'approve';
+          decision: "allow" | "deny" | "approve";
           reason?:
-            | 'no_grant'
-            | 'argument_denied'
-            | 'revoked'
-            | 'budget_exceeded';
+            | "no_grant"
+            | "argument_denied"
+            | "revoked"
+            | "budget_exceeded";
         },
         Name
       >;
     };
     policy: {
       grant: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           argumentConstraints?: Array<
-            | {arg: string; kind: 'required'}
-            | {arg: string; kind: 'min'; value: number}
-            | {arg: string; kind: 'max'; value: number}
+            | { arg: string; kind: "required" }
+            | { arg: string; kind: "min"; value: number }
+            | { arg: string; kind: "max"; value: number }
             | {
                 arg: string;
-                kind: 'denyValue';
+                kind: "denyValue";
                 value: string | number | boolean;
               }
             | {
                 arg: string;
-                kind: 'allowValues';
+                kind: "allowValues";
                 values: Array<string | number | boolean>;
               }
           > | null;
-          risk?: 'low' | 'medium' | 'high' | null;
+          risk?: "low" | "medium" | "high" | null;
           subject: string;
           tool: string;
         },
@@ -174,28 +174,28 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
       revokeGrant: FunctionReference<
-        'mutation',
-        'internal',
-        {subject: string; tool: string},
+        "mutation",
+        "internal",
+        { subject: string; tool: string },
         null,
         Name
       >;
       setToolPolicy: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           argumentConstraints?: Array<
-            | {arg: string; kind: 'required'}
-            | {arg: string; kind: 'min'; value: number}
-            | {arg: string; kind: 'max'; value: number}
+            | { arg: string; kind: "required" }
+            | { arg: string; kind: "min"; value: number }
+            | { arg: string; kind: "max"; value: number }
             | {
                 arg: string;
-                kind: 'denyValue';
+                kind: "denyValue";
                 value: string | number | boolean;
               }
             | {
                 arg: string;
-                kind: 'allowValues';
+                kind: "allowValues";
                 values: Array<string | number | boolean>;
               }
           > | null;
@@ -206,20 +206,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
       setToolRisk: FunctionReference<
-        'mutation',
-        'internal',
-        {level: 'low' | 'medium' | 'high'; tool: string},
+        "mutation",
+        "internal",
+        { level: "low" | "medium" | "high"; tool: string },
         string,
         Name
       >;
     };
     revocations: {
       getStatus: FunctionReference<
-        'query',
-        'internal',
+        "query",
+        "internal",
         {
           targetId?: string | null;
-          targetType: 'global' | 'org' | 'agent' | 'grant';
+          targetType: "global" | "org" | "agent" | "grant";
         },
         {
           active: boolean;
@@ -230,23 +230,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
       liftRevocation: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           targetId?: string | null;
-          targetType: 'global' | 'org' | 'agent' | 'grant';
+          targetType: "global" | "org" | "agent" | "grant";
         },
         null,
         Name
       >;
       revoke: FunctionReference<
-        'mutation',
-        'internal',
+        "mutation",
+        "internal",
         {
           reason: string;
           revokedBy?: string | null;
           targetId?: string | null;
-          targetType: 'global' | 'org' | 'agent' | 'grant';
+          targetType: "global" | "org" | "agent" | "grant";
         },
         string,
         Name

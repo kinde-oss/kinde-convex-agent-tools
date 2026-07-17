@@ -17,7 +17,6 @@ type Args = Record<string, unknown>;
 const SUBJECT = 'user_alice';
 
 beforeEach(() => {
-  vi.stubEnv('TOOLS_SIGNING_SECRET', 'test-signing-secret');
   vi.stubEnv('MODE', 'test');
 });
 

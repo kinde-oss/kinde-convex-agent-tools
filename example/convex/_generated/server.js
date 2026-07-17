@@ -15,8 +15,8 @@ import {
   mutationGeneric,
   internalActionGeneric,
   internalMutationGeneric,
-  internalQueryGeneric
-} from 'convex/server';
+  internalQueryGeneric,
+} from "convex/server";
 
 /**
  * Define a query in this Convex app's public API.
@@ -91,8 +91,3 @@ export const internalAction = internalActionGeneric;
  * @returns The wrapped function. Import this function from `convex/http.js` and route it to hook it up.
  */
 export const httpAction = httpActionGeneric;
-
-/**
- * Typesafe environment variables declared in `convex.config.ts`.
- */
-export const env = process.env;

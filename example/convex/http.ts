@@ -1,31 +1,62 @@
 import {httpRouter} from 'convex/server';
+import {createRemoteJWKSet, jwtVerify} from 'jose';
 import {registerRoutes} from '@kinde-oss/kinde-convex-agent-tools';
+import type {VerifiedCaller} from '@kinde-oss/kinde-convex-agent-tools';
 import {api, components} from './_generated/api.js';
 
 const http = httpRouter();
 
-// EXAMPLE ONLY — NOT PRODUCTION AUTH. A real app MUST authenticate the caller
-// against its auth provider (verify a session cookie or bearer JWT — the blessed
-// default is `@kinde-oss/kinde-convex-agent-auth`'s `verifyCaller`) and return
-// the authenticated subject. Here we merely map a shared-secret header to a
-// subject header, closed unless `EXAMPLE_CALLER_TOKEN` is set and the token
-// matches exactly. Never ship a shared-secret header check as real auth.
-const verifyCaller = async (request: Request): Promise<{subject: string}> => {
-  const expected = process.env.EXAMPLE_CALLER_TOKEN;
-  const token = request.headers.get('X-Caller-Token');
-  if (
-    expected === undefined ||
-    expected.length === 0 ||
-    token === null ||
-    token !== expected
-  ) {
-    throw new Error('The caller could not be authenticated.');
+/**
+ * Authenticate the caller from a REAL Kinde token and return the subject the
+ * decision acts for. This is the pattern to copy: the subject is DERIVED from a
+ * verified signature, never read from a header.
+ *
+ * Why that matters here more than anywhere else: the tools component's grant
+ * lookup is identity-agnostic — it asks only "does a grant exist for this
+ * subject and tool?" and cannot check that the caller IS that subject. The
+ * subject IS the trust decision. An earlier version of this example read
+ * `X-Subject` and passed it straight through, which let any caller decide
+ * against any principal's allowlist. A header can be typed by anyone; only a
+ * signature proves anything.
+ *
+ * The hook has no Convex ctx, so it verifies against the tenant JWKS directly
+ * with jose (the same approach as agent-auth's `authorizeApprover` example). In
+ * a real app, prefer `@kinde-oss/kinde-convex-agent-auth`'s `verifyCaller`,
+ * which additionally checks the audience, the agent registry and revocation —
+ * see the README's "Composing with agent-auth".
+ */
+const verifyCaller = async (request: Request): Promise<VerifiedCaller> => {
+  // 1. Pull the bearer token. Never a value copied out of a body or a header
+  //    that names an identity — only the credential itself.
+  const header = request.headers.get('Authorization') ?? '';
+  const token = header.startsWith('Bearer ')
+    ? header.slice('Bearer '.length).trim()
+    : '';
+  if (token === '') {
+    throw new Error('Missing caller bearer token.');
   }
-  const subject = request.headers.get('X-Subject');
-  if (subject === null || subject.length === 0) {
-    throw new Error('Missing authenticated subject.');
+
+  // 2. Resolve the app's own Kinde domain and build the issuer + JWKS endpoint
+  //    from it. Configured out-of-band; never taken from the request.
+  const domain = process.env.KINDE_DOMAIN;
+  if (domain === undefined || domain.length === 0) {
+    throw new Error('KINDE_DOMAIN is not configured for the app.');
   }
-  return {subject};
+  const issuer = `https://${domain}`;
+
+  // 3. Verify the signature and issuer against the tenant's published keys.
+  //    jose fetches and caches the JWKS; a forged token — or one signed by a key
+  //    outside this tenant, or expired — throws here, and the route maps the
+  //    throw to a 401 before the decision pipeline runs.
+  const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks`));
+  const {payload} = await jwtVerify(token, jwks, {issuer});
+
+  // 4. The verified `sub` is the only identity we can trust. This — not a
+  //    header — is what the tool decision is made against.
+  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    throw new Error('The caller token has no sub claim.');
+  }
+  return {subject: payload.sub};
 };
 
 // Default route, budget-gated with the ALLOW-all fake billing seam: an

@@ -22,9 +22,14 @@ export default defineSchema({
    * The allowlist: which tools a subject (or, later, a specific agent) may call.
    * Deny-by-default lives here — the ABSENCE of a matching row is the denial. An
    * optional `argumentConstraints` narrows WHICH calls are allowed; an optional
-   * `riskLevel` feeds the P3 approval gate. `agent` is nullable: a subject-scoped
-   * grant has `agent: null`; agent-scoped grants arrive with the caller-identity
-   * work in P7 (the `by_agent` index is seeded now so that composes cleanly).
+   * `riskLevel` feeds the P3 approval gate.
+   *
+   * P7 — `agent` and the `by_agent` index are SEEDED BUT UNQUERIED. Every grant
+   * written today has `agent: null`, and the spine looks grants up by
+   * `by_subject` only (`enforce.ts` hardcodes `agent = null`), so NOTHING reads
+   * `by_agent` yet. They exist so agent-scoped grants compose cleanly when the
+   * caller-identity work lands; writing an agent-scoped grant now would simply
+   * never match. See the README's "P7 roadmap" section.
    */
   toolGrants: defineTable({
     subject: v.string(),
@@ -83,6 +88,14 @@ export default defineSchema({
    * without re-reading the call. `status` moves pending → approved | denied; a
    * pending row past `expiresAt` is treated as `expired` on read (lazy, never
    * persisted). `resolvedBy`/`resolvedAt` record the human resolver.
+   *
+   * The row carries TWO digests of the same args, with different jobs:
+   *   - `argDigest`  — the REDACTED display digest (`redactArgs`), shown to the
+   *     human approver and matching the decision row. Non-cryptographic.
+   *   - `argBinding` — the SHA-256 ARGUMENT BINDING (`argBindingDigest`), which
+   *     is what `checkTool` actually compares when consuming this ticket. It is
+   *     never displayed. Keeping them separate means the value a human reads can
+   *     stay redacted while the value that GATES the call stays collision-proof.
    */
   approvals: defineTable({
     toolCallRef: v.id('toolCalls'),
@@ -90,6 +103,7 @@ export default defineSchema({
     agent: nullableString,
     tool: v.string(),
     argDigest: v.string(),
+    argBinding: v.string(),
     correlationId: v.string(),
     status: approvalStatusValidator,
     requestedBy: nullableString,

@@ -8,23 +8,29 @@
  * @module
  */
 
-import type * as approvals from '../approvals.js';
-import type * as audit from '../audit.js';
-import type * as enforce from '../enforce.js';
-import type * as env from '../env.js';
-import type * as errors from '../errors.js';
-import type * as helpers from '../helpers.js';
-import type * as policy from '../policy.js';
-import type * as redact from '../redact.js';
-import type * as revocations from '../revocations.js';
-import type * as validators from '../validators.js';
+import type * as approvals from "../approvals.js";
+import type * as audit from "../audit.js";
+import type * as digest from "../digest.js";
+import type * as enforce from "../enforce.js";
+import type * as env from "../env.js";
+import type * as errors from "../errors.js";
+import type * as helpers from "../helpers.js";
+import type * as policy from "../policy.js";
+import type * as redact from "../redact.js";
+import type * as revocations from "../revocations.js";
+import type * as validators from "../validators.js";
 
-import type {ApiFromModules, FilterApi, FunctionReference} from 'convex/server';
-import {anyApi, componentsGeneric} from 'convex/server';
+import type {
+  ApiFromModules,
+  FilterApi,
+  FunctionReference,
+} from "convex/server";
+import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   approvals: typeof approvals;
   audit: typeof audit;
+  digest: typeof digest;
   enforce: typeof enforce;
   env: typeof env;
   errors: typeof errors;
@@ -45,7 +51,7 @@ const fullApi: ApiFromModules<{
  */
 export const api: FilterApi<
   typeof fullApi,
-  FunctionReference<any, 'public'>
+  FunctionReference<any, "public">
 > = anyApi as any;
 
 /**
@@ -58,7 +64,7 @@ export const api: FilterApi<
  */
 export const internal: FilterApi<
   typeof fullApi,
-  FunctionReference<any, 'internal'>
+  FunctionReference<any, "internal">
 > = anyApi as any;
 
 export const components = componentsGeneric() as unknown as {};

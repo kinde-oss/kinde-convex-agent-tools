@@ -12,6 +12,7 @@ import {
   resolveRevocation
 } from './helpers.js';
 import {activeRevocationLevels} from './revocations.js';
+import {argBindingDigest} from './digest.js';
 import {redactArgs} from './redact.js';
 import {
   argsValidator,
@@ -76,9 +77,12 @@ type DecisionResult = Infer<typeof decisionResultValidator>;
  *      billing) and BEFORE risk.
  *   e. Risk — the effective risk (the stricter of grant vs tool-policy risk) is
  *      resolved; if it requires approval (threshold: `high`), a single-use
- *      approved ticket for this exact subject+tool+argDigest is consumed and the
+ *      approved ticket for this exact subject+tool+argBinding is consumed and the
  *      call ALLOWED (`approval_consumed`); otherwise the call routes to `approve`
- *      (one pending approvals row created) instead of allow.
+ *      (one pending approvals row created) instead of allow. `argBinding` is the
+ *      SHA-256 argument binding (see `digest.ts`) — distinct from the redacted
+ *      `argDigest` that is recorded for display, because a ticket match is a
+ *      security decision and must be collision-proof.
  *   f. Otherwise → allow.
  */
 export const checkTool = mutation({
@@ -102,8 +106,19 @@ export const checkTool = mutation({
     // One correlation id for the whole call — used by the billing payload and by
     // the single decision row, so they always share it.
     const correlationId = args.correlationId ?? crypto.randomUUID();
-    // Agent-scoped identity is P7; the subject is the acting identity and every
-    // record is subject-scoped.
+    // P7 — NOT WIRED YET. `agent` is hardcoded null: the subject is the acting
+    // identity and every record is subject-scoped. The HTTP seam's
+    // `VerifiedCaller` already ACCEPTS `org`/`agent` (see `client/http.ts`) and
+    // `toolGrants` already carries an `agent` field with a `by_agent` index, but
+    // NOTHING threads either into this decision spine today. The consequences to
+    // be explicit about:
+    //   - an agent-scoped grant is never matched (the allowlist looks up by
+    //     subject only), and
+    //   - an ORG- or AGENT-level revocation from agent-auth CANNOT deny a call
+    //     here — `activeRevocationLevels` is passed null for both below, so only
+    //     the global and grant levels can ever fire.
+    // Accepted for forward compatibility so the shapes compose cleanly when P7
+    // lands; see the README's "P7 roadmap" section.
     const agent = null;
     const argDigest = redactArgs(callArgs);
 
@@ -163,7 +178,10 @@ export const checkTool = mutation({
     // pending approvals row, then back-link its id onto the toolCalls row — all
     // in this mutation. Still exactly one audit row + one toolCalls row + one
     // approvals row.
-    const approve = async (riskPolicy: RiskLevel): Promise<DecisionResult> => {
+    const approve = async (
+      riskPolicy: RiskLevel,
+      argBinding: string
+    ): Promise<DecisionResult> => {
       const {correlationId, toolCallId} = await record(
         'approve',
         'approval_required',
@@ -175,6 +193,7 @@ export const checkTool = mutation({
         agent,
         tool: args.tool,
         argDigest,
+        argBinding,
         correlationId,
         status: 'pending',
         requestedBy: args.subject,
@@ -193,8 +212,14 @@ export const checkTool = mutation({
 
     // a.5 Revocation overlay: an ACTIVE kill switch that short-circuits BEFORE
     // the allowlist. Re-queried every call (no caching) so a revoke denies the
-    // very next checkTool. `org` is not in the identity model yet (null);
-    // `agent` is null until P7 — both are structurally supported by the query.
+    // very next checkTool.
+    //
+    // P7 — `org` and `agent` are passed null (see the `agent` declaration
+    // above). The query STRUCTURALLY supports both levels, but with null inputs
+    // the org and agent branches can never match, so only `global` and `grant`
+    // revocations are enforceable today. Revoking an org or an agent in
+    // agent-auth does NOT deny tool calls here until P7 threads a verified
+    // org/agent in; see the README's "P7 roadmap" section.
     const revoked = resolveRevocation(
       await activeRevocationLevels(ctx, {
         subject: args.subject,
@@ -274,12 +299,17 @@ export const checkTool = mutation({
     // e. Risk — resolve the effective (stricter) risk and route high-risk calls
     // to human approval. A single-use ticket: before minting a NEW pending
     // approval, look for one already `approved`, UNEXPIRED and unconsumed for
-    // this exact subject+tool+argDigest. If found, consume it (mark
+    // this exact subject+tool+argBinding. If found, consume it (mark
     // `consumedAt`) and ALLOW this one call; a later call must be approved
-    // afresh. The argDigest match is the argument binding — an approval for
+    // afresh. The argBinding match is the argument binding — an approval for
     // argsA never authorizes argsB.
     const risk = effectiveRisk(grant.riskLevel, policy?.riskLevel ?? null);
     if (risk !== null && requiresApproval(risk)) {
+      // The SHA-256 binding is computed ONLY here, on the approval path — the
+      // one place it is load-bearing — so the common allow/deny paths do no
+      // crypto work. Minting (below) and matching (here) both go through the
+      // same `argBindingDigest`, so they cannot drift.
+      const argBinding = await argBindingDigest(callArgs);
       const candidates = await ctx.db
         .query('approvals')
         .withIndex('by_subject_tool_status', (q) =>
@@ -289,16 +319,20 @@ export const checkTool = mutation({
             .eq('status', 'approved')
         )
         .collect();
-      // The oldest approved, unconsumed, UNEXPIRED ticket for this exact digest
-      // (bounded, few rows). An approved ticket past its `expiresAt` is dead —
-      // resolution-time expiry only guards PENDING approvals, so it must also
-      // be enforced here or a stale approval could authorize a call long after
-      // its TTL. Oldest-first is deterministic if several ever match.
+      // The oldest approved, unconsumed, UNEXPIRED ticket for this exact
+      // binding (bounded, few rows). An approved ticket past its `expiresAt` is
+      // dead — resolution-time expiry only guards PENDING approvals, so it must
+      // also be enforced here or a stale approval could authorize a call long
+      // after its TTL. Oldest-first is deterministic if several ever match.
+      //
+      // The match is on `argBinding` (SHA-256), NOT the redacted `argDigest`:
+      // this comparison is what makes an approval argument-bound, so it must be
+      // infeasible to craft args that collide with an approved ticket's digest.
       const ticket = candidates
         .filter(
           (a) =>
             a.consumedAt === null &&
-            a.argDigest === argDigest &&
+            a.argBinding === argBinding &&
             (a.expiresAt === null || a.expiresAt >= now)
         )
         .sort(
@@ -309,7 +343,7 @@ export const checkTool = mutation({
         await ctx.db.patch('approvals', ticket._id, {consumedAt: now});
         return await allow('approval_consumed');
       }
-      return await approve(risk);
+      return await approve(risk, argBinding);
     }
 
     // f. Otherwise → allow.

@@ -1,16 +1,65 @@
 /// <reference types="vite/client" />
-import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi
+} from 'vitest';
 import {ConvexError} from 'convex/values';
 import type {Value} from 'convex/values';
+import {SignJWT, exportJWK, generateKeyPair} from 'jose';
+import type {JWK} from 'jose';
 import type {ApprovalId} from '@kinde-oss/kinde-convex-agent-tools';
 import {api, components} from './_generated/api.js';
 import {initConvexTest} from './setup.test.js';
 
 type ConvexTest = ReturnType<typeof initConvexTest>;
+type JwkRecord = Record<string, string | string[]>;
 
 const AGENT = 'agent_007';
-const TOKEN = 'caller-ok';
 const SECRET = 'sk-super-secret-value-1234';
+
+const DOMAIN = 'testco.kinde.com';
+const ISSUER = `https://${DOMAIN}`;
+const JWKS_URL = `${ISSUER}/.well-known/jwks`;
+
+let signingKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
+let publicJwk: JwkRecord;
+
+function toJwkRecord(jwk: JWK, kid: string): JwkRecord {
+  const record: JwkRecord = {kid, alg: 'RS256', use: 'sig'};
+  for (const [member, value] of Object.entries(jwk)) {
+    if (typeof value === 'string') {
+      record[member] = value;
+    } else if (
+      Array.isArray(value) &&
+      value.every((item): item is string => typeof item === 'string')
+    ) {
+      record[member] = value;
+    }
+  }
+  return record;
+}
+
+beforeAll(async () => {
+  const pair = await generateKeyPair('RS256', {extractable: true});
+  signingKey = pair.privateKey;
+  publicJwk = toJwkRecord(await exportJWK(pair.publicKey), 'key-main');
+});
+
+/** A valid Kinde-shaped user token for `sub`, signed by the tenant's key. */
+async function mint(sub: string): Promise<string> {
+  return await new SignJWT({})
+    .setProtectedHeader({alg: 'RS256', kid: 'key-main'})
+    .setIssuedAt()
+    .setIssuer(ISSUER)
+    .setSubject(sub)
+    .setExpirationTime('1h')
+    .sign(signingKey);
+}
 
 /** Extract the typed data of a ConvexError thrown by a rejecting app call. */
 async function catchData(
@@ -43,12 +92,27 @@ async function billingCorrelationIds(t: ConvexTest): Promise<string[]> {
 
 describe('end-to-end agent governance narrative', () => {
   beforeEach(() => {
-    vi.stubEnv('TOOLS_SIGNING_SECRET', 'test-signing-secret');
     vi.stubEnv('MODE', 'test');
-    vi.stubEnv('EXAMPLE_CALLER_TOKEN', TOKEN);
+    vi.stubEnv('KINDE_DOMAIN', DOMAIN);
+    // The example's verifyCaller verifies the token against the tenant's
+    // published keys; serve them.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === JWKS_URL) {
+          return new Response(JSON.stringify({keys: [publicJwk]}), {
+            status: 200,
+            headers: {'Content-Type': 'application/json'}
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   test('grant → deny(no_grant) → deny(argument_denied)/allow → approve→approved→executed → revoke', async () => {
@@ -56,18 +120,17 @@ describe('end-to-end agent governance narrative', () => {
 
     // ---- (a) GRANT + ALLOW ------------------------------------------------
     // Grant 'search' to the agent. Then exercise BOTH entry paths:
-    //   • the verifyCaller-composed HTTP route (subject arrives from the header
-    //     the app's verifyCaller authenticates), and
+    //   • the verifyCaller-composed HTTP route (subject DERIVED from the
+    //     verified token's `sub` — never from client input), and
     //   • the in-Convex client (gate.runTool).
     await t.mutation(api.example.grantTool, {subject: AGENT, tool: 'search'});
 
-    // (a.i) HTTP: subject comes from verifyCaller, not from trusted input.
+    // (a.i) HTTP: the subject is whatever the token proves, nothing else.
     const httpRes = await t.fetch('/tools/check', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Caller-Token': TOKEN,
-        'X-Subject': AGENT
+        Authorization: `Bearer ${await mint(AGENT)}`
       },
       body: JSON.stringify({tool: 'search', correlationId: 'c-a-http'})
     });

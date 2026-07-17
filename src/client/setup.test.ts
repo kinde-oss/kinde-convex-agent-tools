@@ -18,9 +18,8 @@ import type {RunFullCtx} from './index.js';
 
 const modules = import.meta.glob('./**/*.*s');
 
-// Hardening: stub ALL required component env vars before every test.
+// Stub the component's env before every test. MODE is the only var it reads.
 beforeEach(() => {
-  vi.stubEnv('TOOLS_SIGNING_SECRET', 'test-signing-secret');
   vi.stubEnv('MODE', 'test');
 });
 
@@ -89,18 +88,16 @@ test('component boots via register()', async () => {
   expect(ok).toBe('ok');
 });
 
-test('readEnv validates the MODE enum and requires the secret', () => {
-  expect(readEnv()).toEqual({
-    signingSecret: 'test-signing-secret',
-    mode: 'test'
-  });
+test('readEnv validates the MODE enum', () => {
+  expect(readEnv()).toEqual({mode: 'test'});
 
+  // Outside the enum is a hard failure, never a silent fallback to the default.
   vi.stubEnv('MODE', 'bogus');
   expect(() => readEnv()).toThrow(ConvexError);
 
-  vi.stubEnv('MODE', 'live');
-  vi.stubEnv('TOOLS_SIGNING_SECRET', '');
-  expect(() => readEnv()).toThrow(ConvexError);
+  // Unset → the documented `live` default.
+  vi.stubEnv('MODE', '');
+  expect(readEnv()).toEqual({mode: 'live'});
 });
 
 test('parseJson maps a non-JSON body to a typed failure', () => {

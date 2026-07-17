@@ -6,9 +6,8 @@ import {expectFail, initConvexTest, makeRunCtx} from './setup.test.js';
 
 const component = components.tools;
 
-// Hardening: stub ALL required component env vars before every test.
+// Stub the component's env before every test. MODE is the only var it reads.
 beforeEach(() => {
-  vi.stubEnv('TOOLS_SIGNING_SECRET', 'test-signing-secret');
   vi.stubEnv('MODE', 'test');
 });
 

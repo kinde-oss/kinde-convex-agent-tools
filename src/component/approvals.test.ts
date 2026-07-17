@@ -2,6 +2,8 @@ import {describe, expect, test} from 'vitest';
 import {api} from './_generated/api.js';
 import type {Id} from './_generated/dataModel.js';
 import {expectFail, initConvexTest} from './setup.test.js';
+import {argBindingDigest} from './digest.js';
+import {redactArgs} from './redact.js';
 
 type ConvexTest = ReturnType<typeof initConvexTest>;
 
@@ -383,7 +385,7 @@ describe('single-use approval consumption (the governed re-invoke path)', () => 
     const approvalId = approvalIdOf(first);
     await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
 
-    // Different args → different digest → the ticket does not apply → approve.
+    // Different args → different binding → the ticket does not apply → approve.
     const other = await t.mutation(api.enforce.checkTool, {
       subject: SUBJECT,
       tool: 'wire',
@@ -396,6 +398,42 @@ describe('single-use approval consumption (the governed re-invoke path)', () => 
     // The argsA ticket is untouched — no blank cheque, no arg-swap bypass.
     const status = await t.query(api.approvals.getStatus, {approvalId});
     expect(status?.consumedAt).toBeNull();
+  });
+
+  test('the ticket is bound by the SHA-256 argBinding, not the redacted digest', async () => {
+    const t = initConvexTest();
+    await grantHigh(t, 'wire');
+    const args = {amount: 500, memo: 'rent'};
+
+    const res = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args,
+      correlationId: 'b1'
+    });
+    const [approval] = await approvalRows(t);
+
+    // The value the spine COMPARES is the cryptographic binding of these args.
+    expect(approval.argBinding).toBe(await argBindingDigest(args));
+    expect(approval.argBinding).toMatch(/^v1:sha256:[0-9a-f]{64}$/);
+
+    // The value stored for DISPLAY stays redacted — the raw memo never lands in
+    // it, and it is a different value from the binding.
+    expect(approval.argDigest).toBe(redactArgs(args));
+    expect(approval.argDigest).not.toContain('rent');
+    expect(approval.argDigest).not.toBe(approval.argBinding);
+
+    // And the binding still round-trips: the same args consume the ticket.
+    const approvalId = approvalIdOf(res);
+    await t.mutation(api.approvals.approve, {approvalId, approver: APPROVER});
+    const consumed = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args,
+      correlationId: 'b2'
+    });
+    expect(consumed.decision).toBe('allow');
+    expect(consumed.reason).toBeUndefined();
   });
 
   test('an EXPIRED approved ticket is NOT consumable: same-args checkTool mints afresh', async () => {

@@ -9,9 +9,14 @@ import type {BillingCheck} from './billing.js';
 
 /**
  * What an app's {@link VerifyCaller} returns on success: at least the
- * authenticated `subject` the decision pipeline acts for. `org`/`agent` are
- * accepted for forward-compat (the identity model grows in later phases) but are
- * not yet consumed by the spine.
+ * authenticated `subject` the decision pipeline acts for.
+ *
+ * P7 — `org`/`agent` are accepted for forward compatibility (the identity model
+ * grows in later phases) and are NOT consumed by the spine: `registerRoutes`
+ * passes only `subject` to `checkTool`. Supplying them changes NO decision
+ * today. Do not read their presence as org isolation or agent scoping — until
+ * P7, org/agent-level revocation does not apply and agent-scoped grants are not
+ * matched. See the README's "P7 roadmap" section.
  */
 export interface VerifiedCaller {
   subject: string;
@@ -250,6 +255,14 @@ export function registerRoutes(
       // The billing handle is serialized only AFTER auth, and the billing
       // mutation itself runs inside checkTool, so no billing call precedes
       // authentication. Absent billingCheck → budget skipped, exactly as before.
+      //
+      // P7 — ONLY `verified.subject` is threaded on. `verified.org` and
+      // `verified.agent` are accepted by the VerifyCaller contract for forward
+      // compatibility, but checkTool takes no org/agent argument, so they are
+      // deliberately dropped here rather than silently half-applied. Until P7:
+      // an org- or agent-level revocation does NOT deny an HTTP-originated call,
+      // and an agent-scoped grant is not matched — the subject alone is the
+      // trust decision. See the README's "P7 roadmap" section.
       try {
         const billingCheck = await billingCheckHandle(options.billingCheck);
         const decision = await ctx.runMutation(component.enforce.checkTool, {

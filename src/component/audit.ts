@@ -9,6 +9,7 @@ import {
   query as defineQuery
 } from './_generated/server.js';
 import schema from './schema.js';
+import {fail} from './errors.js';
 import {redactArgs} from './redact.js';
 import {argsValidator, decisionValidator} from './validators.js';
 
@@ -105,6 +106,29 @@ export const query = defineQuery({
  * new call attempt). The `argDigest` is recomputed from the same args via the
  * same pure `redactArgs`, so it matches the decision row's digest exactly and
  * still never stores raw args.
+ *
+ * A COMPLETION ROW MUST CORRELATE TO A REAL ALLOW DECISION, so the audit stream
+ * cannot contain executions that were never authorized. This mutation — like
+ * every other in the component — cannot see who is calling it, so it does not
+ * merely trust its caller to have run the spine first: it VERIFIES that this
+ * component itself wrote an `allow` decision for the same
+ * (correlationId, subject, tool), and fails closed with `no_matching_decision`
+ * if not. Without that check, a completion is unfalsifiable history: any caller
+ * could append "tool X ran for subject Y" for a call that was denied, or that
+ * never happened at all, and the trail would be indistinguishable from a real
+ * execution. Validating here makes a forged completion structurally impossible
+ * rather than merely discouraged.
+ *
+ * The prior-decision lookup EXCLUDES `executed` rows (which are themselves
+ * `decision: 'allow'`), so the audit stream can never self-certify: a completion
+ * must point back to a genuine decision, never to another completion.
+ *
+ * Duplicate completions are an IDEMPOTENT NO-OP, not an error. `runTool` calls
+ * this AFTER the tool's side effects have already happened, so throwing here
+ * would turn a successful run into a caller-visible failure it cannot undo —
+ * and a replayed completion should add nothing to the trail rather than inflate
+ * it. Returning quietly is the outcome both callers already expect (neither
+ * reads a return value).
  */
 export const recordCompletion = defineMutation({
   args: {
@@ -115,6 +139,38 @@ export const recordCompletion = defineMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // Bounded by ONE correlation id (a handful of rows for a single call), so
+    // the in-memory narrowing here is safe — the same bounded-exception
+    // argument the `query` above makes for `by_correlation`.
+    const correlated = await ctx.db
+      .query('audit')
+      .withIndex('by_correlation', (q) =>
+        q.eq('correlationId', args.correlationId)
+      )
+      .collect();
+    const forThisCall = correlated.filter(
+      (row) => row.subject === args.subject && row.tool === args.tool
+    );
+
+    // Already completed → no-op. Idempotent on the same key the decision is
+    // validated against, so a different tool sharing a correlation id can still
+    // record its own completion.
+    if (forThisCall.some((row) => row.reason === 'executed')) {
+      return null;
+    }
+
+    // The decision of record must exist, must be THIS component's, and must be
+    // an allow. A deny/approve row (or no row at all) fails closed.
+    const authorized = forThisCall.some(
+      (row) => row.decision === 'allow' && row.reason !== 'executed'
+    );
+    if (!authorized) {
+      fail(
+        'no_matching_decision',
+        'No allow decision exists for this correlationId, subject and tool; a completion cannot be recorded.'
+      );
+    }
+
     await ctx.db.insert('audit', {
       subject: args.subject,
       agent: null,

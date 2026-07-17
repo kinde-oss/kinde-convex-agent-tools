@@ -1,8 +1,5 @@
 import {fail} from './errors.js';
 
-/** The env var that holds the HMAC signing secret, unless the app overrides it. */
-export const DEFAULT_SIGNING_SECRET_ENV_VAR = 'TOOLS_SIGNING_SECRET';
-
 /** Operating mode. `test` relaxes external calls for local development. */
 export type Mode = 'test' | 'live';
 
@@ -14,8 +11,6 @@ function isMode(value: string): value is Mode {
 
 /** The component's validated environment. */
 export interface ToolsEnv {
-  /** The HMAC signing secret (non-empty). */
-  signingSecret: string;
   /** The validated operating mode; defaults to `live`. */
   mode: Mode;
 }
@@ -23,22 +18,19 @@ export interface ToolsEnv {
 /**
  * Read and validate the component's environment. Enum-like vars are validated
  * here rather than trusted: `MODE` defaults sensibly to `live`, and any value
- * outside the enum is a hard failure instead of a silent fallback. The signing
- * secret is required and must be non-empty. `signingSecretEnvVar` names the var
- * to read it from (default {@link DEFAULT_SIGNING_SECRET_ENV_VAR}), so an app
- * that mounts the component under a different secret var can point at it.
+ * outside the enum is a hard failure instead of a silent fallback.
+ *
+ * The component holds NO SECRET. Grants, tool policies and approvals are
+ * admin-set policy rows that live inside the database trust boundary, so their
+ * integrity comes from the app-layer auth that gates who may write them — not
+ * from a signature the component would have to verify against itself. (Contrast
+ * agent-auth, which signs DELEGATIONS: those are bearer artifacts that travel
+ * outside the database and must prove they were not tampered with in transit.)
+ * The one place argument integrity is load-bearing — an approval ticket bound to
+ * its arguments — is enforced by the SHA-256 binding in `digest.ts`, which needs
+ * no secret because it authenticates nothing; it only has to be collision-proof.
  */
-export function readEnv(
-  signingSecretEnvVar: string = DEFAULT_SIGNING_SECRET_ENV_VAR
-): ToolsEnv {
-  const signingSecret = process.env[signingSecretEnvVar];
-  if (signingSecret === undefined || signingSecret.length === 0) {
-    fail(
-      'missing_env',
-      `Required environment variable ${signingSecretEnvVar} is not set.`
-    );
-  }
-
+export function readEnv(): ToolsEnv {
   let mode: Mode = 'live';
   const rawMode = process.env.MODE;
   if (rawMode !== undefined && rawMode.length > 0) {
@@ -51,5 +43,5 @@ export function readEnv(
     mode = rawMode;
   }
 
-  return {signingSecret, mode};
+  return {mode};
 }

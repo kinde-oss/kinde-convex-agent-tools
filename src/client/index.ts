@@ -280,17 +280,9 @@ export interface ToolCall {
  * composition seam (P5). The AUTH seam (`verifyCaller`) is NOT here — it belongs
  * to the HTTP path only, so it lives on the app-mounted route's
  * {@link RegisterRoutesOptions}; in-Convex callers pass a trusted subject
- * directly. `signingSecretEnvVar` names the env var the component reads its HMAC
- * signing secret from.
+ * directly.
  */
 export interface AgentToolsOptions {
-  /**
-   * Name of the env var holding the HMAC signing secret the component reads.
-   * Defaults to `TOOLS_SIGNING_SECRET` (declared in the component's
-   * `convex.config.ts`; set the value via `npx convex env set`). Override only
-   * if the app mounts the component under a different secret var.
-   */
-  signingSecretEnvVar?: string;
   /**
    * Optional billing seam. See {@link BillingCheck}. When set, every
    * `gate.checkTool` call is metered/gated by this mutation during the budget
@@ -424,10 +416,5 @@ export class AgentTools {
     this.audit = {
       query: (ctx, opts) => ctx.runQuery(component.audit.query, opts)
     };
-  }
-
-  /** The env var the component reads its HMAC signing secret from. */
-  get signingSecretEnvVar(): string {
-    return this.options.signingSecretEnvVar ?? 'TOOLS_SIGNING_SECRET';
   }
 }
