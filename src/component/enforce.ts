@@ -82,7 +82,7 @@ type DecisionResult = Infer<typeof decisionResultValidator>;
  *      (one pending approvals row created) instead of allow. `argBinding` is the
  *      SHA-256 argument binding (see `digest.ts`) — distinct from the redacted
  *      `argDigest` that is recorded for display, because a ticket match is a
- *      security decision and must be collision-proof.
+ *      security decision and must be collision-resistant.
  *   f. Otherwise → allow.
  */
 export const checkTool = mutation({

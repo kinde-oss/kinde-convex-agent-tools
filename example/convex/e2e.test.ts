@@ -25,6 +25,10 @@ const SECRET = 'sk-super-secret-value-1234';
 const DOMAIN = 'testco.kinde.com';
 const ISSUER = `https://${DOMAIN}`;
 const JWKS_URL = `${ISSUER}/.well-known/jwks`;
+/** The audience THIS API expects — what the example's KINDE_AUDIENCE is set to. */
+const AUDIENCE = 'https://tools.example.com';
+/** A different API in the SAME Kinde tenant: same issuer, same signing key. */
+const OTHER_AUDIENCE = 'https://some-other-api.example.com';
 
 let signingKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
 let publicJwk: JwkRecord;
@@ -50,12 +54,20 @@ beforeAll(async () => {
   publicJwk = toJwkRecord(await exportJWK(pair.publicKey), 'key-main');
 });
 
-/** A valid Kinde-shaped user token for `sub`, signed by the tenant's key. */
-async function mint(sub: string): Promise<string> {
+/**
+ * A valid Kinde-shaped user token for `sub`, signed by the tenant's key.
+ * `audience` defaults to the one this API expects, so a plain `mint(sub)` is a
+ * fully valid caller token.
+ */
+async function mint(
+  sub: string,
+  audience: string = AUDIENCE
+): Promise<string> {
   return await new SignJWT({})
     .setProtectedHeader({alg: 'RS256', kid: 'key-main'})
     .setIssuedAt()
     .setIssuer(ISSUER)
+    .setAudience(audience)
     .setSubject(sub)
     .setExpirationTime('1h')
     .sign(signingKey);
@@ -94,6 +106,7 @@ describe('end-to-end agent governance narrative', () => {
   beforeEach(() => {
     vi.stubEnv('MODE', 'test');
     vi.stubEnv('KINDE_DOMAIN', DOMAIN);
+    vi.stubEnv('KINDE_AUDIENCE', AUDIENCE);
     // The example's verifyCaller verifies the token against the tenant's
     // published keys; serve them.
     vi.stubGlobal(
@@ -137,6 +150,23 @@ describe('end-to-end agent governance narrative', () => {
     expect(httpRes.status).toBe(200);
     expect(((await httpRes.json()) as {decision: string}).decision).toBe(
       'allow'
+    );
+
+    // (a.i.b) The SAME agent, the SAME granted tool, a CORRECTLY SIGNED token
+    // from the SAME tenant — but minted for a different API. The grant would
+    // allow it; the audience check rejects it before the spine ever runs, so a
+    // token borrowed from another API cannot drive this one.
+    const crossAud = await t.fetch('/tools/check', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await mint(AGENT, OTHER_AUDIENCE)}`
+      },
+      body: JSON.stringify({tool: 'search', correlationId: 'c-a-crossaud'})
+    });
+    expect(crossAud.status).toBe(401);
+    expect(((await crossAud.json()) as {code: string}).code).toBe(
+      'caller_unauthenticated'
     );
 
     // (a.ii) in-Convex runTool: allow → fn runs (a secret arg proves redaction).
@@ -339,5 +369,54 @@ describe('end-to-end agent governance narrative', () => {
     });
     expect(result.decision).toBe('deny');
     expect(result.reason).toBe('budget_exceeded');
+  });
+
+  test('an approved execution WITH args records a completion for those exact args', async () => {
+    const t = initConvexTest();
+    const SUBJECT = 'agent_args';
+    await t.mutation(api.example.grantTool, {subject: SUBJECT, tool: 'wire'});
+    await t.mutation(api.example.setToolRisk, {tool: 'wire', level: 'high'});
+
+    // The narrative above exercises the approval path with NO args, which
+    // cannot catch a caller that decides with args and completes without them:
+    // both digests would be the digest of {}. This drives the same path WITH
+    // args, so `executeApproved` must thread them into `recordCompletion` or
+    // the completion is refused `no_matching_decision`.
+    const pending = await t.mutation(api.example.checkGovernedTool, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 42},
+      correlationId: 'c-args'
+    });
+    expect(pending.decision).toBe('approve');
+    const approvalId = pending.approvalId;
+    if (approvalId === undefined) {
+      throw new Error('expected an approvalId');
+    }
+    await t.mutation(api.example.approveApproval, {
+      approvalId,
+      approver: 'human_reviewer'
+    });
+
+    const ran = await t.mutation(api.example.executeApproved, {
+      subject: SUBJECT,
+      tool: 'wire',
+      args: {amount: 42},
+      approvalId,
+      correlationId: 'c-args'
+    });
+    expect(ran.ran).toBe(true);
+
+    // The full trail for this correlation: the approve decision, the human's
+    // resolution, the approval_consumed allow, and the executed completion.
+    const page = await t.query(components.tools.audit.query, {
+      paginationOpts: {numItems: 50, cursor: null},
+      correlationId: 'c-args'
+    });
+    const executed = page.page.filter((row) => row.reason === 'executed');
+    expect(executed).toHaveLength(1);
+    // The completion names the args that actually ran — and stays redacted.
+    expect(executed[0].argDigest).toContain('amount');
+    expect(executed[0].argDigest).not.toContain('42');
   });
 });

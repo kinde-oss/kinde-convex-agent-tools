@@ -112,12 +112,30 @@ export const query = defineQuery({
  * every other in the component — cannot see who is calling it, so it does not
  * merely trust its caller to have run the spine first: it VERIFIES that this
  * component itself wrote an `allow` decision for the same
- * (correlationId, subject, tool), and fails closed with `no_matching_decision`
- * if not. Without that check, a completion is unfalsifiable history: any caller
- * could append "tool X ran for subject Y" for a call that was denied, or that
- * never happened at all, and the trail would be indistinguishable from a real
- * execution. Validating here makes a forged completion structurally impossible
- * rather than merely discouraged.
+ * (correlationId, subject, tool, argDigest), and fails closed with
+ * `no_matching_decision` if not. Without that check, a completion is
+ * unfalsifiable history: any caller could append "tool X ran for subject Y" for
+ * a call that was denied, or that never happened at all, and the trail would be
+ * indistinguishable from a real execution. Validating here makes a forged
+ * completion structurally impossible rather than merely discouraged.
+ *
+ * `argDigest` is part of that key because a completion names the args it ran
+ * with. Matching on (correlationId, subject, tool) alone would let a completion
+ * claim args the decision never evaluated — the spine allows `{amount: 5}` and
+ * the trail records `{amount: 5000}` as executed under it. Both digests come
+ * from the same `redactArgs`, so the decision and its completion agree exactly
+ * or the completion is refused.
+ *
+ * SCOPE — this argDigest match is an AUDIT-CONSISTENCY check, not an
+ * authorization gate, and `redactArgs` is deliberately the right tool for it.
+ * The digest is FNV-1a, so a caller who ALREADY HOLDS a genuine allow decision
+ * could in principle craft colliding args and mislabel their own authorized
+ * call. That is the ceiling of the attack: it cannot manufacture authorization,
+ * only misdescribe a call the spine really allowed. The two checks that gate
+ * authority are collision-resistant — the allow decision must exist (above),
+ * and an approval's single-use ticket is bound by the SHA-256 `argBinding` in
+ * `digest.ts`. Comparing against the stored `argDigest` is what keeps this
+ * mutation honest about the row it is validating against.
  *
  * The prior-decision lookup EXCLUDES `executed` rows (which are themselves
  * `decision: 'allow'`), so the audit stream can never self-certify: a completion
@@ -139,6 +157,11 @@ export const recordCompletion = defineMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // The completion's OWN digest, from the same pure `redactArgs` the spine
+    // used for the decision row — so identical args always produce an identical
+    // digest and the comparison below is exact.
+    const argDigest = redactArgs(args.args ?? {});
+
     // Bounded by ONE correlation id (a handful of rows for a single call), so
     // the in-memory narrowing here is safe — the same bounded-exception
     // argument the `query` above makes for `by_correlation`.
@@ -148,26 +171,34 @@ export const recordCompletion = defineMutation({
         q.eq('correlationId', args.correlationId)
       )
       .collect();
+    // The full identity of a call is (correlationId, subject, tool, args) —
+    // `argDigest` included. Without it, a completion could name args the
+    // decision never saw and the trail would read as though THOSE args were
+    // authorized.
     const forThisCall = correlated.filter(
-      (row) => row.subject === args.subject && row.tool === args.tool
+      (row) =>
+        row.subject === args.subject &&
+        row.tool === args.tool &&
+        row.argDigest === argDigest
     );
 
     // Already completed → no-op. Idempotent on the same key the decision is
-    // validated against, so a different tool sharing a correlation id can still
-    // record its own completion.
+    // validated against, so a different tool (or different args) sharing a
+    // correlation id can still record its own completion.
     if (forThisCall.some((row) => row.reason === 'executed')) {
       return null;
     }
 
-    // The decision of record must exist, must be THIS component's, and must be
-    // an allow. A deny/approve row (or no row at all) fails closed.
+    // The decision of record must exist, must be THIS component's, must be an
+    // allow, and must be for THESE args. A deny/approve row, a row for
+    // different args, or no row at all fails closed.
     const authorized = forThisCall.some(
       (row) => row.decision === 'allow' && row.reason !== 'executed'
     );
     if (!authorized) {
       fail(
         'no_matching_decision',
-        'No allow decision exists for this correlationId, subject and tool; a completion cannot be recorded.'
+        'No allow decision exists for this correlationId, subject, tool and args; a completion cannot be recorded.'
       );
     }
 
@@ -175,7 +206,7 @@ export const recordCompletion = defineMutation({
       subject: args.subject,
       agent: null,
       tool: args.tool,
-      argDigest: redactArgs(args.args ?? {}),
+      argDigest,
       decision: 'allow',
       reason: 'executed',
       correlationId: args.correlationId,

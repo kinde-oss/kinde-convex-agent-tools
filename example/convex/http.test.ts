@@ -21,6 +21,10 @@ type SigningKey = Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
 const DOMAIN = 'testco.kinde.com';
 const ISSUER = `https://${DOMAIN}`;
 const JWKS_URL = `${ISSUER}/.well-known/jwks`;
+/** The audience THIS API expects — what the example's KINDE_AUDIENCE is set to. */
+const AUDIENCE = 'https://tools.example.com';
+/** A different API in the SAME Kinde tenant: same issuer, same signing key. */
+const OTHER_AUDIENCE = 'https://some-other-api.example.com';
 
 const SUBJECT = 'user_alice';
 
@@ -75,6 +79,8 @@ interface MintOptions {
   key?: SigningKey;
   sub?: string;
   expiresInSeconds?: number;
+  /** Defaults to AUDIENCE — the audience this API is configured to expect. */
+  audience?: string;
 }
 
 /** Mint a Kinde-shaped user token. Defaults to a VALID token for SUBJECT. */
@@ -84,6 +90,7 @@ async function mint(options: MintOptions = {}): Promise<string> {
     .setProtectedHeader({alg: 'RS256', kid: 'key-main'})
     .setIssuedAt(now - 60)
     .setIssuer(ISSUER)
+    .setAudience(options.audience ?? AUDIENCE)
     .setExpirationTime(now + (options.expiresInSeconds ?? 3600));
   const sub = options.sub ?? SUBJECT;
   if (sub !== '') {
@@ -136,6 +143,7 @@ describe('HTTP seam — POST /tools/check (app-mounted, verifyCaller-gated)', ()
   beforeEach(() => {
     vi.stubEnv('MODE', 'test');
     vi.stubEnv('KINDE_DOMAIN', DOMAIN);
+    vi.stubEnv('KINDE_AUDIENCE', AUDIENCE);
     stubKindeEndpoints();
   });
   afterEach(() => {
@@ -181,13 +189,56 @@ describe('HTTP seam — POST /tools/check (app-mounted, verifyCaller-gated)', ()
     expect(await auditRows(t)).toHaveLength(0);
   });
 
+  test('CROSS-AUDIENCE REPLAY: a valid tenant token minted for another API → 401', async () => {
+    const t = initConvexTest();
+    await grantSearch(t);
+
+    // The sharpest case in this file: everything about this token is genuine.
+    // Correct issuer, signed by the tenant's REAL key (so the JWKS check
+    // passes), unexpired, real `sub` — it is simply not meant for THIS API.
+    // Only the audience check can tell the difference.
+    const res = await post(
+      t,
+      JSON.stringify({tool: 'search', correlationId: 'cross-aud'}),
+      await bearer({audience: OTHER_AUDIENCE})
+    );
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as DecisionBody).code).toBe(
+      'caller_unauthenticated'
+    );
+
+    // Neither handler ran: no audit row (the decision pipeline never started)
+    // and no billing call (the budget seam is only reached after verifyCaller).
+    expect(await auditRows(t)).toHaveLength(0);
+    expect(await billingCallIds(t)).toHaveLength(0);
+  });
+
+  test('FAIL CLOSED: unset KINDE_AUDIENCE rejects even a perfectly valid token', async () => {
+    const t = initConvexTest();
+    await grantSearch(t);
+    // A config gap must never silently downgrade verification. `jose` treats
+    // `audience: undefined` as "no audience check requested" and would accept
+    // the token, so the example refuses to verify at all without the config.
+    vi.stubEnv('KINDE_AUDIENCE', '');
+
+    const res = await post(
+      t,
+      JSON.stringify({tool: 'search'}),
+      await bearer() // correct audience — it is the CONFIG that is missing
+    );
+    expect(res.status).toBe(401);
+    expect(await auditRows(t)).toHaveLength(0);
+  });
+
   test('a token from another issuer → 401', async () => {
     const t = initConvexTest();
     await grantSearch(t);
+    // Correct audience, so the ISSUER is the only thing wrong here.
     const alien = await new SignJWT({})
       .setProtectedHeader({alg: 'RS256', kid: 'key-main'})
       .setIssuedAt()
       .setIssuer('https://attacker.example.com')
+      .setAudience(AUDIENCE)
       .setSubject(SUBJECT)
       .setExpirationTime('1h')
       .sign(mainKey);
@@ -349,6 +400,7 @@ describe('HTTP seam — uniform budget enforcement across entry points', () => {
   beforeEach(() => {
     vi.stubEnv('MODE', 'test');
     vi.stubEnv('KINDE_DOMAIN', DOMAIN);
+    vi.stubEnv('KINDE_AUDIENCE', AUDIENCE);
     stubKindeEndpoints();
   });
   afterEach(() => {

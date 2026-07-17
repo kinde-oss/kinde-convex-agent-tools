@@ -337,9 +337,14 @@ export const executeApproved = mutation({
       tool: args.tool,
       at: Date.now()
     });
+    // Thread the SAME args the decision was made with. `recordCompletion`
+    // validates the completion against the decision row's argDigest, so a
+    // completion that omitted them would describe a different call and be
+    // refused — rightly: the executed row must name the args that actually ran.
     await ctx.runMutation(components.tools.audit.recordCompletion, {
       subject: args.subject,
       tool: args.tool,
+      ...(args.args === undefined ? {} : {args: args.args}),
       correlationId: args.correlationId
     });
     return {ran: true};

@@ -28,7 +28,8 @@ export interface ToolsEnv {
  * outside the database and must prove they were not tampered with in transit.)
  * The one place argument integrity is load-bearing — an approval ticket bound to
  * its arguments — is enforced by the SHA-256 binding in `digest.ts`, which needs
- * no secret because it authenticates nothing; it only has to be collision-proof.
+ * no secret because it authenticates nothing; it only has to be
+ * collision-resistant.
  */
 export function readEnv(): ToolsEnv {
   let mode: Mode = 'live';

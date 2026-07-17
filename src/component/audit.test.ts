@@ -1,6 +1,7 @@
 import {describe, expect, test} from 'vitest';
 import {api} from './_generated/api.js';
 import {expectFail, initConvexTest} from './setup.test.js';
+import {redactArgs} from './redact.js';
 
 type ConvexTest = ReturnType<typeof initConvexTest>;
 
@@ -137,6 +138,56 @@ describe('audit.recordCompletion — a completion must correlate to an allow', (
       'no_matching_decision'
     );
     expect(await executedRows(t)).toHaveLength(0);
+  });
+
+  test('MISMATCHED ARGS: a completion naming args the decision never saw is refused', async () => {
+    const t = initConvexTest();
+    await grant(t, 'transfer');
+    // The spine decided — and allowed — a transfer of 5.
+    const decision = await t.mutation(api.enforce.checkTool, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 5},
+      correlationId: 'c9'
+    });
+    expect(decision.decision).toBe('allow');
+
+    // Same subject, same tool, same correlation id — different args. Recording
+    // this would put "transfer 5000 executed" in the trail under a decision
+    // that only ever authorized 5.
+    await expectFail(
+      t.mutation(api.audit.recordCompletion, {
+        subject: SUBJECT,
+        tool: 'transfer',
+        args: {amount: 5000},
+        correlationId: 'c9'
+      }),
+      'no_matching_decision'
+    );
+    expect(await executedRows(t)).toHaveLength(0);
+
+    // Omitting the args entirely is the same mismatch (digest of {} ≠ digest of
+    // {amount: 5}) — this is the shape a caller falls into by accident.
+    await expectFail(
+      t.mutation(api.audit.recordCompletion, {
+        subject: SUBJECT,
+        tool: 'transfer',
+        correlationId: 'c9'
+      }),
+      'no_matching_decision'
+    );
+    expect(await executedRows(t)).toHaveLength(0);
+
+    // The honest completion — the args actually decided — still works.
+    await t.mutation(api.audit.recordCompletion, {
+      subject: SUBJECT,
+      tool: 'transfer',
+      args: {amount: 5},
+      correlationId: 'c9'
+    });
+    const executed = await executedRows(t);
+    expect(executed).toHaveLength(1);
+    expect(executed[0].argDigest).toBe(redactArgs({amount: 5}));
   });
 
   test('double-complete is an idempotent no-op: one executed row, no throw', async () => {

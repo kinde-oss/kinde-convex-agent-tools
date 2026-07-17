@@ -95,7 +95,7 @@ export default defineSchema({
    *   - `argBinding` — the SHA-256 ARGUMENT BINDING (`argBindingDigest`), which
    *     is what `checkTool` actually compares when consuming this ticket. It is
    *     never displayed. Keeping them separate means the value a human reads can
-   *     stay redacted while the value that GATES the call stays collision-proof.
+   *     stay redacted while the value that GATES the call stays collision-resistant.
    */
   approvals: defineTable({
     toolCallRef: v.id('toolCalls'),

@@ -127,7 +127,7 @@ Set it with `npx convex env set`:
 npx convex env set MODE live
 ```
 
-**Why no signing secret?** Grants, tool policies and approvals are admin-set policy rows that live inside the database trust boundary — their integrity comes from the app-layer auth that gates who may write them (see [Security model](#security-model)), not from a signature the component would verify against itself. This is the same line agent-auth draws between its `tenantPolicies` (unsigned DB rows) and its delegations (signed, because they are bearer artifacts that travel outside the database). The one place argument integrity is load-bearing — an approval bound to the exact arguments it authorizes — is enforced by a SHA-256 digest, which needs no secret because it authenticates nothing; it only has to be collision-proof.
+**Why no signing secret?** Grants, tool policies and approvals are admin-set policy rows that live inside the database trust boundary — their integrity comes from the app-layer auth that gates who may write them (see [Security model](#security-model)), not from a signature the component would verify against itself. This is the same line agent-auth draws between its `tenantPolicies` (unsigned DB rows) and its delegations (signed, because they are bearer artifacts that travel outside the database). The one place argument integrity is load-bearing — an approval bound to the exact arguments it authorizes — is enforced by a SHA-256 digest, which needs no secret because it authenticates nothing; it only has to be collision-resistant.
 
 Construct the client once:
 
@@ -172,9 +172,16 @@ import {registerRoutes} from '@kinde-oss/kinde-convex-agent-tools';
 import {components} from './_generated/api.js';
 
 const http = httpRouter();
-const jwks = createRemoteJWKSet(
-  new URL(`https://${process.env.KINDE_DOMAIN}/.well-known/jwks`)
-);
+
+// Read the config ONCE and fail closed if it is missing. Do not inline
+// `process.env.*` into jwtVerify — see the note below.
+const domain = process.env.KINDE_DOMAIN;
+const audience = process.env.KINDE_AUDIENCE;
+if (!domain || !audience) {
+  throw new Error('KINDE_DOMAIN and KINDE_AUDIENCE must both be configured.');
+}
+const issuer = `https://${domain}`;
+const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks`));
 
 registerRoutes(http, components.tools, {
   verifyCaller: async (request) => {
@@ -184,9 +191,11 @@ registerRoutes(http, components.tools, {
       /^Bearer /,
       ''
     );
-    const {payload} = await jwtVerify(token, jwks, {
-      issuer: `https://${process.env.KINDE_DOMAIN}`
-    });
+    // Check the AUDIENCE as well as the issuer. One Kinde tenant mints tokens
+    // for many APIs, all with the same issuer and the same signing keys — so
+    // without `audience`, a valid token minted for a DIFFERENT API in your
+    // tenant verifies here and is accepted as a caller (cross-audience replay).
+    const {payload} = await jwtVerify(token, jwks, {issuer, audience});
     if (typeof payload.sub !== 'string') {
       throw new Error('no sub claim'); // a throw is a 401
     }
@@ -196,6 +205,8 @@ registerRoutes(http, components.tools, {
 
 export default http;
 ```
+
+**Configure `KINDE_AUDIENCE` alongside `KINDE_DOMAIN`, and fail closed if either is missing.** This is why the snippet reads them into checked constants instead of inlining `process.env.KINDE_AUDIENCE` into `jwtVerify`: `jose` treats `audience: undefined` as *"no audience check requested"* and verifies the token anyway — identical to omitting the option. So the convenient-looking `audience: process.env.KINDE_AUDIENCE` silently downgrades to no audience check the moment the variable is unset, which is precisely the failure it was added to prevent. `example/convex/http.ts` takes the same fail-closed line and throws rather than verify without it.
 
 This mounts `POST /tools/check`. `verifyCaller` is required to mount the route — a request that fails it is rejected 401 before the decision pipeline runs. The route returns 200 for allow, 202 for approve, and 403 for deny; HTTP callers should read the response body's `decision`/`reason`, not only the status, since different deny reasons (`no_grant`, `budget_exceeded`) share 403. When configured with a `billingCheck`, an HTTP-originated call runs the identical budget step as an in-Convex `gate.checkTool`, so budget enforcement is uniform across entry points; without one, the budget step is skipped. See `RegisterRoutesOptions` for `pathPrefix` and `billingCheck`.
 
@@ -284,8 +295,14 @@ import {v} from 'convex/values';
 import {AgentAuth} from '@kinde-oss/kinde-convex-agent-auth';
 import {AgentTools, toolArgsValidator} from '@kinde-oss/kinde-convex-agent-tools';
 
+import type {ToolArgs} from '@kinde-oss/kinde-convex-agent-tools';
+
 const agentAuth = new AgentAuth(components.agentAuth);
 const agentTools = new AgentTools(components.tools);
+
+// application-supplied: execute the tool and return its result. This is YOUR
+// tool implementation — the gate decides, it never runs anything itself.
+declare function runTheTool(tool: string, args?: ToolArgs): Promise<unknown>;
 
 /**
  * The canonical agent-facing tool endpoint: verify, then gate. Note what the
