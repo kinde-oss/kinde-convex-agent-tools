@@ -1,0 +1,58 @@
+import type {ToolArgs, ToolArgValue} from './validators.js';
+
+/**
+ * FNV-1a (32-bit), returned as 8 hex chars. NOT cryptographic — it exists only
+ * to make the redacted digest stable and collision-resistant enough for audit
+ * correlation. It never protects the value: {@link redactValue} has already
+ * dropped the raw value, so only a fingerprint of it survives.
+ *
+ * Because it is not collision-resistant against a CRAFTED input, nothing in this
+ * file may ever gate a decision. The argument binding an approval is spent
+ * against is `digest.ts`'s SHA-256 `argBindingDigest` — keep that split.
+ */
+function hash8(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Redact a single argument value to `type:fingerprint` (or `type[]#len:...` for
+ * a string array). The raw value is DROPPED — only its type and a stable
+ * fingerprint remain — so no secret/PII value is ever reproduced in the digest.
+ *
+ * Array elements join on NUL (`\0`), written as an ESCAPE rather than a literal
+ * byte — the literal makes git treat this file as binary and stop diffing it.
+ * The separator is deliberate: a printable one would let `['a b']` and
+ * `['a', 'b']` fingerprint alike.
+ */
+function redactValue(value: ToolArgValue): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return `string[]#${value.length}:${hash8(value.join('\0'))}`;
+  }
+  return `${typeof value}:${hash8(String(value))}`;
+}
+
+/**
+ * Produce a stable, redacted digest of a call's arguments, suitable for the
+ * audit trail. Pure and deterministic: keys are sorted so the same arguments
+ * always yield the same digest, and every VALUE is replaced by a redacted token
+ * (see {@link redactValue}) — this is the ONLY representation of args that ever
+ * touches `toolCalls`/`audit`. Argument NAMES are preserved (they are schema,
+ * not secrets); argument VALUES never appear verbatim.
+ *
+ * DISPLAY ONLY. This digest is written to the audit trail and read by humans; it
+ * is never compared to authorize anything.
+ */
+export function redactArgs(args: ToolArgs): string {
+  const parts = Object.keys(args)
+    .sort()
+    .map((key) => `${key}:${redactValue(args[key])}`);
+  return `v1{${parts.join(',')}}`;
+}
